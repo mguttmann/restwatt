@@ -43,7 +43,8 @@ public enum Formatting {
         }
     }
 
-    /// The lines shared by tooltip and click menu, without the process list.
+    /// The plain-text lines of the battery details, without the process list. The app
+    /// renders `detailRows` instead; these lines are the wording the rows mirror.
     public static func summaryLines(_ model: DisplayModel) -> [String] {
         switch model {
         case .unavailable(let reason):
@@ -100,7 +101,8 @@ public enum Formatting {
         return lines
     }
 
-    /// Multi-line hover text for the status item.
+    /// Multi-line plain-text form of the details (the former tooltip text). Kept as the
+    /// reference wording for `detailRows`; not shown by the app itself.
     public static func tooltipText(_ model: DisplayModel) -> String {
         var lines = ["Restwatt"] + summaryLines(model)
         if case .battery(let status) = model {

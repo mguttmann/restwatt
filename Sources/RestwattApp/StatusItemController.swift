@@ -19,6 +19,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let menu = NSMenu()
     private let popover = DetailPopover()
     private var hoverTimer: Timer?
+    /// True between menuWillOpen and menuDidClose; no popover is armed or shown meanwhile.
+    private var menuIsOpen = false
     private var latestModel: DisplayModel = .unavailable(reason: "Starting")
 
     private let version: String = {
@@ -64,7 +66,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// `NSTrackingArea` owner callback: the pointer entered the status item button.
     @objc func mouseEntered(with event: NSEvent) {
         cancelHoverTimer()
-        if popover.isShown || menu.highlightedItem != nil {
+        if popover.isShown || menuIsOpen {
             return
         }
         hoverTimer = Timer.scheduledTimer(
@@ -82,7 +84,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func showPopover() {
         hoverTimer = nil
-        guard let button = statusItem.button else {
+        guard !menuIsOpen, let button = statusItem.button else {
             return
         }
         popover.show(latestModel, relativeTo: button)
@@ -117,6 +119,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// enabled (no action, so selecting one only closes the menu) to be drawn in the normal
     /// label colour instead of the disabled grey.
     func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
         cancelHoverTimer()
         popover.close()
         menu.removeAllItems()
@@ -136,6 +139,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let quit = NSMenuItem(title: "Quit Restwatt", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
     }
 
     private static func menuItem(for row: DetailRow) -> NSMenuItem {
