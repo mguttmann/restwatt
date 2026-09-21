@@ -14,11 +14,15 @@ The version lives in the `VERSION` file.
 
 - Menu bar item (no Dock icon) showing the current battery draw in watts and the
   smoothed time to empty as `h:mm`; `Charging`, `On AC` and `No battery` states.
-- Native tooltip on mouseover with charge level, remaining Wh, current draw, time left
-  at current draw, smoothed time left with observation time and confidence, macOS's own
-  estimate, and the top three processes.
-- Click menu with the same details, the top five processes, the version and
-  `Quit Restwatt`.
+- Hover popover on mouseover (no click needed) with charge level, remaining Wh, current
+  draw, time left at current draw, smoothed time left with observation time and
+  confidence, macOS's own estimate, and the top three processes, laid out as label/value
+  rows in the normal label colour with monospaced digits; the current draw and both
+  time-left values are emphasised. The popover does not take focus, closes when the
+  pointer leaves it and when the menu opens, and is rebuilt from the latest sample.
+- Click menu with the same rows, the top five processes, the version and
+  `Quit Restwatt`. Information lines are enabled items without an action, so they are
+  drawn in the normal label colour instead of the disabled grey.
 - Adaptive time-to-empty estimator: starts from the current draw and smooths with a time
   constant that grows with the observation window (60 s to 1800 s), with a low, medium
   or high confidence level. Resets when the Mac is plugged in.

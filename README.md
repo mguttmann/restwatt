@@ -16,29 +16,45 @@ shows `--:--`. While charging the title reads `Charging` plus macOS's own time t
 when the gauge knows it; on AC power without charging it reads `On AC` (with the
 percentage once the battery is full). Without a battery it reads `No battery`.
 
-**Mouseover** on the item shows a native tooltip with the details:
+**Mouseover** on the item opens a popover with the details, without a click. It appears
+after a short delay while the pointer rests on the item and closes shortly after the
+pointer leaves both the item and the popover (the delays are the `showDelay` and
+`hideDelay` constants in `Sources/RestwattApp/StatusItemController.swift`). The popover
+is a two-column label/value grid in the normal label colour, so it follows a light or
+dark menu bar; the numbers use monospaced digits, and the three figures to read at a
+glance, the current draw and both time-left values, are set larger and bolder:
 
 ```
-Restwatt
-Battery 95 %, 63.0 Wh remaining
-Drawing 7.1 W now
-Time left at current draw: 8:49
-Time left, smoothed (42 min observed, confidence high): 8:40
-macOS estimate: 7:46
-Top processes (your processes, CPU energy only, estimate):
-  com.apple.WebKit.WebContent  0.02 W
-  Restwatt  0.01 W
-  Terminal  0.01 W
-  Visible total 0.04 W over 3 processes, unaccounted 7.10 W
+Battery                          95 %, 63.0 Wh
+Drawing now                              7.1 W
+Time left at current draw                 8:49
+Time left, smoothed                       8:12
+Smoothing        42 min observed, confidence high
+macOS estimate                            7:46
+
+Top processes (your processes, CPU energy only, estimate)
+Discord Helper (Renderer) (2 processes)  0.42 W
+com.apple.WebKit.WebContent              0.02 W
+Restwatt                                 0.01 W
+Visible total    0.63 W over 105 processes, unaccounted 6.51 W
 ```
 
-The tooltip text is refreshed on every sample. Whether macOS actually displays it
-while you hover over the menu bar item has not been verified by an automated test;
-please open an issue if it does not appear for you.
+While charging the primary rows are `Charging at` and `Time to full (macOS estimate)`;
+on AC power without charging a single `Power` row says `On AC, fully charged` or
+`On AC, not charging`. Before the first estimate the time-left row reads `waiting for
+the first gauge reading`.
 
-**Click** on the item opens a menu with the same lines, the top five processes, the
-version number and `Quit Restwatt`. The menu is rebuilt from the latest sample each
-time it opens.
+The popover does not take focus away from the app you are working in and is rebuilt from
+the latest sample whenever it is shown or a new sample arrives while it is visible. It
+closes when the click menu opens. The rows themselves come from the unit-tested
+`RestwattCore` layer; the hover behaviour itself is AppKit code without an automated
+test, so please open an issue if the popover does not appear or does not go away for you.
+
+**Click** on the item opens a menu with the same rows, the top five processes, the
+version number and `Quit Restwatt`. The information lines are drawn in the normal label
+colour (they are enabled menu items without an action; selecting one only closes the
+menu). The menu is rebuilt from the latest sample each time it opens, and Cmd-Q inside
+the menu quits.
 
 ## How the estimate works
 
@@ -82,7 +98,7 @@ Below a draw of 0.1 W no time to empty is shown. Times above 5999 minutes are sh
 - Restwatt cannot see the future. Both figures assume the draw stays as it is (current)
   or as it has been on average (smoothed). Opening a video call will invalidate either.
 - macOS keeps its own time-to-empty estimators, and they disagree with each other. The
-  tooltip shows the one `pmset -g batt` shows, labelled `macOS estimate`, for comparison.
+  details show the one `pmset -g batt` shows, labelled `macOS estimate`, for comparison.
 - The **process list is a partial picture and an estimate**. It ranks the processes your
   user account may inspect by the kernel's per-process CPU energy counter
   (`ri_energy_nj` from `proc_pid_rusage`), aggregated by process name, as average watts
@@ -154,10 +170,12 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   ProcessEnergyRanker.swift        per-process energy deltas, aggregation by name
   BatteryMonitor.swift             one tick: read, dedupe, estimate, rank; Sampling.interval
   Formatting.swift                 every user-visible string
+  DetailRow.swift                  label/value rows for the popover and the menu
 Sources/RestwattApp/               the menu bar app
   main.swift                       NSApplication bootstrap, accessory activation policy
   AppDelegate.swift                timer, power-source notification, wiring
-  StatusItemController.swift       NSStatusItem title, tooltip, click menu
+  StatusItemController.swift       NSStatusItem title, hover tracking, click menu
+  DetailPopover.swift              NSPopover with the detail rows in a two-column grid
   IOKitBatteryReader.swift         AppleSmartBattery registry and IOPowerSources
   LibprocProcessReader.swift       proc_listallpids and proc_pid_rusage (RUSAGE_INFO_V6)
 Tests/RestwattCoreTests/           XCTest suite; runs without a battery or privileges
@@ -178,8 +196,9 @@ swift test
 
 `RestwattCore` has no AppKit or IOKit import; hardware and process access sit behind the
 `BatteryReading`, `ProcessReading` and `ClockReading` protocols with test doubles, so the
-tests run on any Mac and on CI. The suite pins the menu bar and tooltip strings, the
-estimator behaviour (including a test that fails when the time constant is not adaptive),
+tests run on any Mac and on CI. The suite pins the menu bar strings, the detail rows of
+the popover and the menu (and that they carry the same figures as the plain text lines),
+the estimator behaviour (including a test that fails when the time constant is not adaptive),
 the ranker's handling of pid reuse, and a few repository invariants: `VERSION` matches the
 latest CHANGELOG release, this README states the sampling interval, and no file contains
 an em dash or en dash.
