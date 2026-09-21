@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest ships Xcode 26.x, macos-15 ships Xcode 16.4: the lower edge for
+        # swift-tools-version 6.0.
+        runner: [macos-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build
+        run: swift build -v
+
+      - name: Test
+        run: swift test
+
+      - name: Assemble app bundle
+        run: make app
+
+      - name: Verify bundle
+        run: |
+          codesign --verify --deep --strict dist/Restwatt.app
+          plutil -lint dist/Restwatt.app/Contents/Info.plist
+          test "$(defaults read "$PWD/dist/Restwatt.app/Contents/Info.plist" CFBundleShortVersionString)" = "$(tr -d '[:space:]' < VERSION)"
