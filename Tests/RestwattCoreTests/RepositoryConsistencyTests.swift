@@ -11,7 +11,8 @@ final class RepositoryConsistencyTests: XCTestCase {
     private func read(_ relativePath: String) throws -> String {
         let url = Self.repositoryRoot.appendingPathComponent(relativePath)
         guard FileManager.default.fileExists(atPath: url.path) else {
-            throw XCTSkip("\(relativePath) is not in the tree yet")
+            XCTFail("\(relativePath) is missing from the repository")
+            return ""
         }
         return try String(contentsOf: url, encoding: .utf8)
     }
@@ -43,19 +44,22 @@ final class RepositoryConsistencyTests: XCTestCase {
     func testNoDashesInSourcesAndDocs() throws {
         var files = ["Package.swift", "README.md", "CHANGELOG.md", "Makefile", "scripts/make-app.sh",
                      ".github/workflows/ci.yml", "packaging/Info.plist.template"]
-        let sources = Self.repositoryRoot.appendingPathComponent("Sources")
-        let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)
-        while let url = enumerator?.nextObject() as? URL {
-            if url.pathExtension == "swift" {
-                files.append("Sources/" + url.path.replacingOccurrences(of: sources.path + "/", with: ""))
+        for directory in ["Sources", "Tests"] {
+            let root = Self.repositoryRoot.appendingPathComponent(directory)
+            let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
+            while let url = enumerator?.nextObject() as? URL {
+                if url.pathExtension == "swift" {
+                    files.append(directory + "/" + url.path.replacingOccurrences(of: root.path + "/", with: ""))
+                }
             }
         }
-        XCTAssertGreaterThan(files.count, 7, "the Sources tree must be enumerable")
+        XCTAssertGreaterThan(files.count, 7, "the Sources and Tests trees must be enumerable")
 
         for file in files {
             let url = Self.repositoryRoot.appendingPathComponent(file)
             guard FileManager.default.fileExists(atPath: url.path) else {
-                continue  // docs arrive with the Writer; checked once they exist
+                XCTFail("\(file) is missing from the repository")
+                continue
             }
             let text = try String(contentsOf: url, encoding: .utf8)
             XCTAssertFalse(text.contains("\u{2013}"), "en dash in \(file)")

@@ -97,7 +97,10 @@ Below a draw of 0.1 W no time to empty is shown. Times above 5999 minutes are sh
 
 - macOS 14 or newer (declared once in `Package.swift` and in the app's
   `LSMinimumSystemVersion`).
-- A Mac with a built-in battery. On a desktop Mac the item shows `No battery`.
+- An Apple silicon Mac with a built-in battery. The meaning of the battery gauge keys
+  (`CurrentCapacity` as a percentage, the `BatteryData` dictionary) was only verified on
+  Apple silicon; on an Intel Mac the app is expected to show `No battery` rather than
+  wrong numbers. On a desktop Mac the item shows `No battery`.
 - To build: Xcode 16 or newer (Swift 6.0 toolchain). No third-party packages.
 
 ## Build and install
@@ -131,7 +134,7 @@ background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the ass
 
 - No network access, no telemetry, no analytics, no crash reporting.
 - Nothing is written to disk. There is no preferences file and no history.
-- From the battery registry entry only these keys are read: `UpdateTime`, `Voltage`,
+- From the battery registry entry only these keys are used: `UpdateTime`, `Voltage`,
   `Amperage`, `CurrentCapacity`, `IsCharging`, `ExternalConnected`, `FullyCharged`,
   `AvgTimeToEmpty`, `AvgTimeToFull` and, inside `BatteryData`, `BatteryPower`,
   `RemainingCapacity`, `FullChargeCapacity`, `DesignCapacity`. From IOPowerSources only

@@ -26,14 +26,16 @@ The version lives in the `VERSION` file.
   `ri_energy_nj` counter, aggregated by process name and labelled as a partial estimate,
   with visible total and unaccounted remainder.
 - Battery reading from the `AppleSmartBattery` IOKit registry entry, deduplicated by
-  gauge `UpdateTime`; immediate re-sample on power source changes.
+  gauge `UpdateTime`; immediate re-sample on power source changes. A charge percentage
+  outside 0 to 100 is treated as unreadable, because the gauge key semantics were only
+  verified on Apple silicon.
 - One 30-second sampling timer; no network, no files written.
 - `RestwattCore` library with hardware-free unit tests, including repository consistency
   checks (version, sampling interval in the README, no em or en dashes).
 - `make app` and `scripts/make-app.sh` assembling an ad-hoc signed `dist/Restwatt.app`
   from the SwiftPM release product, version taken from `VERSION`.
 - GitHub Actions CI on `macos-latest` and `macos-15`: `swift build`, `swift test`,
-  `make app`, bundle verification; no secrets.
+  `make app`, bundle verification; no secrets; the checkout action is pinned by commit SHA.
 
 [Unreleased]: https://github.com/mguttmann/restwatt/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/mguttmann/restwatt/releases/tag/v0.1.0

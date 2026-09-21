@@ -23,6 +23,14 @@ struct IOKitBatteryReader: BatteryReading {
         }
         let batteryData = properties["BatteryData"] as? [String: Any] ?? [:]
 
+        // Top-level CurrentCapacity is a percentage on Apple silicon Macs; the gauge key
+        // semantics were only verified there. A value outside 0...100 is treated as
+        // unreadable rather than shown as a percentage.
+        let currentCapacityPercent = try Self.int(properties, "CurrentCapacity")
+        guard (0...100).contains(currentCapacityPercent) else {
+            throw BatteryReadError.malformed(key: "CurrentCapacity")
+        }
+
         return BatterySnapshot(
             updateTime: try Self.int(properties, "UpdateTime"),
             voltageMilliVolts: try Self.int(properties, "Voltage"),
@@ -31,7 +39,7 @@ struct IOKitBatteryReader: BatteryReading {
             remainingCapacityMilliAmpHours: try Self.int(batteryData, "RemainingCapacity"),
             fullChargeCapacityMilliAmpHours: try Self.int(batteryData, "FullChargeCapacity"),
             designCapacityMilliAmpHours: try Self.int(batteryData, "DesignCapacity"),
-            currentCapacityPercent: try Self.int(properties, "CurrentCapacity"),
+            currentCapacityPercent: currentCapacityPercent,
             isCharging: properties["IsCharging"] as? Bool ?? false,
             externalConnected: properties["ExternalConnected"] as? Bool ?? false,
             fullyCharged: properties["FullyCharged"] as? Bool ?? false,
