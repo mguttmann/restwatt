@@ -13,6 +13,16 @@ network. It writes two small files: its settings and a statistics file that lets
 estimate and a per-process energy total for the day survive a restart (see "How the
 estimate works" and "Privacy").
 
+<p align="center">
+  <img src="docs/screenshots/popover.png" width="800"
+       alt="The hover popover: battery level and remaining energy, the current draw, time left at the current draw and smoothed, the smoothing window with its confidence, the macOS estimate, the top processes of the last interval and the Today statistic">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/menu.png" width="460"
+       alt="The click menu: the same battery rows, the top five processes, the Today section, the Power toggles (keep awake, keep display awake, keep disk awake, stay awake with the lid closed), the Sync toggles (iCloud Drive, iCloud Photos, OneDrive), the version and Quit Restwatt">
+</p>
+
 ## What it shows
 
 **Menu bar title** while the battery is draining: the current draw in watts and the
@@ -591,6 +601,7 @@ packaging/Info.plist.template      bundle metadata, version filled in from VERSI
 scripts/make-app.sh                assembles and ad-hoc signs dist/Restwatt.app
 Makefile                           build, test, app, run, install, clean
 .github/workflows/ci.yml           swift build, swift test, make app on macOS runners
+docs/screenshots/                  the two README screenshots (popover, click menu)
 CHANGELOG.md                       Keep a Changelog
 CLAUDE.md                          binding conventions for contributors and agents
 ```
