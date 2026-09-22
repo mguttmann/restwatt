@@ -23,18 +23,40 @@ final class DetailRowTests: XCTestCase {
             processReport: report, sampledAt: 0))
     }
 
-    private func charging(minutes: Int?) -> DisplayModel {
+    private let chargeEstimate = Estimate(
+        instantWatts: 49.055, smoothedWatts: 49.055, instantMinutes: 22, smoothedMinutes: 22,
+        observedSeconds: 0, sampleCount: 1, confidence: .low)
+
+    private func charging(estimate: Estimate?, gaugeMinutes: Int?, adapterWatts: Int? = 96) -> DisplayModel {
         .battery(BatteryStatus(
-            state: .charging, percent: 95, remainingWattHours: 62.975, drawWatts: -25.18,
-            estimate: nil, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: minutes,
-            processReport: report, sampledAt: 0))
+            state: .charging, percent: 75, remainingWattHours: 51.736, drawWatts: -49.055,
+            estimate: estimate, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: gaugeMinutes,
+            processReport: report, sampledAt: 0, adapterWatts: adapterWatts))
     }
 
-    private func onAC(fullyCharged: Bool) -> DisplayModel {
+    private let weakEstimate = Estimate(
+        instantWatts: 2.266, smoothedWatts: 2.266, instantMinutes: 1667, smoothedMinutes: 1667,
+        observedSeconds: 0, sampleCount: 1, confidence: .low)
+
+    private func weakSource(estimate: Estimate?, adapterWatts: Int? = 30) -> DisplayModel {
+        .battery(BatteryStatus(
+            state: .drainingOnExternalPower, percent: 95, remainingWattHours: 62.975, drawWatts: 2.266,
+            estimate: estimate, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: nil,
+            processReport: report, sampledAt: 0, adapterWatts: adapterWatts))
+    }
+
+    private func onAC(fullyCharged: Bool, adapterWatts: Int? = nil) -> DisplayModel {
         .battery(BatteryStatus(
             state: .onExternalPower(fullyCharged: fullyCharged), percent: 100, remainingWattHours: 70.2,
             drawWatts: 0, estimate: nil, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: nil,
-            processReport: .warmingUp, sampledAt: 0))
+            processReport: .warmingUp, sampledAt: 0, adapterWatts: adapterWatts))
+    }
+
+    private var sourceChanging: DisplayModel {
+        .battery(BatteryStatus(
+            state: .powerSourceChanging, percent: 95, remainingWattHours: 62.975, drawWatts: 7.138,
+            estimate: nil, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: nil,
+            processReport: .warmingUp, sampledAt: 0, adapterWatts: 96))
     }
 
     func testDischargingRows() {
@@ -74,16 +96,53 @@ final class DetailRowTests: XCTestCase {
         XCTAssertEqual(rows.count, 6)
     }
 
-    func testChargingAndExternalPowerRows() {
-        XCTAssertEqual(Formatting.detailRows(charging(minutes: 65)), [
+    func testWeakSourceRows() {
+        XCTAssertEqual(Formatting.detailRows(weakSource(estimate: weakEstimate)), [
             DetailRow("Battery", "95 %, 63.0 Wh"),
-            DetailRow("Charging at", "25.2 W", emphasis: .primary),
-            DetailRow("Time to full (macOS estimate)", "1:05", emphasis: .primary),
+            DetailRow("Drawing now", "2.3 W", emphasis: .primary),
+            DetailRow("Time left at current draw", "27:47", emphasis: .primary),
+            DetailRow("Time left, smoothed", "27:47", emphasis: .primary),
+            DetailRow("Smoothing", "0 min observed, confidence low"),
+            DetailRow("macOS estimate", "not yet available"),
+            DetailRow("Power source", "connected, but it delivers less than the Mac uses", emphasis: .primary),
+            DetailRow("Source rating", "30 W"),
         ])
-        XCTAssertEqual(Formatting.detailRows(charging(minutes: nil)).last?.value, "not yet available")
-        XCTAssertEqual(Formatting.detailRows(onAC(fullyCharged: true)).last,
-                       DetailRow("Power", "On AC, fully charged", emphasis: .primary))
-        XCTAssertEqual(Formatting.detailRows(onAC(fullyCharged: false)).last?.value, "On AC, not charging")
+        let rows = Formatting.detailRows(weakSource(estimate: nil, adapterWatts: nil))
+        XCTAssertEqual(rows[2], DetailRow("Time left", "waiting for the first gauge reading", emphasis: .primary))
+        XCTAssertEqual(rows.last?.label, "Power source")
+        XCTAssertEqual(rows.count, 5)
+    }
+
+    func testChargingRows() {
+        XCTAssertEqual(Formatting.detailRows(charging(estimate: chargeEstimate, gaugeMinutes: 50)), [
+            DetailRow("Battery", "75 %, 51.7 Wh"),
+            DetailRow("Charging at", "49.1 W", emphasis: .primary),
+            DetailRow("Time to full at current power", "0:22", emphasis: .primary),
+            DetailRow("Time to full, smoothed", "0:22", emphasis: .primary),
+            DetailRow("Smoothing", "0 min observed, confidence low"),
+            DetailRow("macOS estimate", "0:50"),
+            DetailRow("Source rating", "96 W"),
+        ])
+        let rows = Formatting.detailRows(charging(estimate: nil, gaugeMinutes: nil, adapterWatts: nil))
+        XCTAssertEqual(rows[2], DetailRow("Time to full", "waiting for the first gauge reading", emphasis: .primary))
+        XCTAssertEqual(rows.last, DetailRow("macOS estimate", "not yet available"))
+        XCTAssertEqual(rows.count, 4)
+    }
+
+    func testExternalPowerAndSourceChangingRows() {
+        XCTAssertEqual(Formatting.detailRows(onAC(fullyCharged: true)), [
+            DetailRow("Battery", "100 %, 70.2 Wh"),
+            DetailRow("Power", "On AC, fully charged", emphasis: .primary),
+        ])
+        XCTAssertEqual(Formatting.detailRows(onAC(fullyCharged: false, adapterWatts: 96)), [
+            DetailRow("Battery", "100 %, 70.2 Wh"),
+            DetailRow("Power", "On AC, not charging", emphasis: .primary),
+            DetailRow("Source rating", "96 W"),
+        ])
+        XCTAssertEqual(Formatting.detailRows(sourceChanging), [
+            DetailRow("Battery", "95 %, 63.0 Wh"),
+            DetailRow("Power", "power source changed, waiting for the gauge", emphasis: .primary),
+        ], "a stale reading shows neither watts nor a rating")
     }
 
     func testUnavailableIsOneHeading() {
@@ -115,8 +174,11 @@ final class DetailRowTests: XCTestCase {
 
     func testRowsCarryTheSameFiguresAsTheStringLines() {
         // The string functions are pinned elsewhere; the rows must not drift from them.
-        for model in [discharging(estimate: estimate), discharging(estimate: nil), charging(minutes: 65),
-                      onAC(fullyCharged: false), .unavailable(reason: "No battery found")] {
+        for model in [discharging(estimate: estimate), discharging(estimate: nil),
+                      weakSource(estimate: weakEstimate), weakSource(estimate: nil),
+                      charging(estimate: chargeEstimate, gaugeMinutes: 50), charging(estimate: nil, gaugeMinutes: nil),
+                      onAC(fullyCharged: false, adapterWatts: 96), sourceChanging,
+                      .unavailable(reason: "No battery found")] {
             let summary = Formatting.summaryLines(model).joined(separator: "\n")
             for row in Formatting.detailRows(model) where !row.value.isEmpty {
                 let figure = row.value.split(separator: ",").first.map(String.init) ?? row.value
@@ -126,7 +188,8 @@ final class DetailRowTests: XCTestCase {
     }
 
     func testNoDashesInRows() {
-        for model in [discharging(estimate: estimate), charging(minutes: nil), onAC(fullyCharged: true)] {
+        for model in [discharging(estimate: estimate), weakSource(estimate: weakEstimate),
+                      charging(estimate: chargeEstimate, gaugeMinutes: nil), onAC(fullyCharged: true), sourceChanging] {
             let text = (Formatting.detailRows(model) + Formatting.processRows(report, limit: 5))
                 .map { $0.label + $0.value }.joined()
             XCTAssertFalse(text.contains("\u{2013}"), "en dash in \(text)")

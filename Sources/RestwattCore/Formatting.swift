@@ -28,19 +28,64 @@ public enum Formatting {
         case .unavailable:
             return "No battery"
         case .battery(let status):
+            let time = status.estimate?.smoothedMinutes.map(durationString(minutes:))
             switch status.state {
             case .discharging:
-                let time = status.estimate?.smoothedMinutes.map(durationString(minutes:)) ?? "--:--"
-                return "\(watts(status.drawWatts))  \(time)"
+                return "\(watts(status.drawWatts))  \(time ?? "--:--")"
+            case .drainingOnExternalPower:
+                return "\(watts(status.drawWatts))  \(time ?? "--:--")  \(weakSourceMarker)"
             case .charging:
-                if let minutes = status.avgTimeToFullMinutes {
-                    return "Charging  \(durationString(minutes: minutes))"
+                if let time {
+                    return "Charging  \(time)"
                 }
                 return "Charging"
             case .onExternalPower(let fullyCharged):
                 return fullyCharged ? "On AC  \(status.percent) %" : "On AC"
+            case .powerSourceChanging:
+                return "\(status.percent) %"
             }
         }
+    }
+
+    /// Short marker in the title while an external source delivers less than the Mac uses.
+    static let weakSourceMarker = "weak source"
+    /// Value of the `Power source` row in the same situation.
+    static let weakSourceText = "connected, but it delivers less than the Mac uses"
+    /// Value of the `Power` row while the gauge reading still predates a plug or unplug event.
+    static let powerSourceChangingText = "power source changed, waiting for the gauge"
+    static let waitingForGaugeText = "waiting for the first gauge reading"
+    static let notYetAvailableText = "not yet available"
+
+    /// The labels of the time block; the same block serves draining and charging.
+    struct TimeLabels {
+        /// Label of the time at the most recent power.
+        let atCurrent: String
+        /// Label of the smoothed time.
+        let smoothed: String
+        /// Label shown while no sample exists yet.
+        let waiting: String
+
+        static let toEmpty = TimeLabels(
+            atCurrent: "Time left at current draw", smoothed: "Time left, smoothed", waiting: "Time left")
+        static let toFull = TimeLabels(
+            atCurrent: "Time to full at current power", smoothed: "Time to full, smoothed", waiting: "Time to full")
+    }
+
+    static func observedMinutes(_ estimate: Estimate) -> Int {
+        Int((estimate.observedSeconds / 60).rounded())
+    }
+
+    /// The two time lines of an estimate, or the waiting line without one.
+    private static func timeLines(_ estimate: Estimate?, _ labels: TimeLabels) -> [String] {
+        guard let estimate else {
+            return ["\(labels.waiting): \(waitingForGaugeText)"]
+        }
+        return [
+            "\(labels.atCurrent): " + (estimate.instantMinutes.map(durationString(minutes:)) ?? "n/a"),
+            "\(labels.smoothed) (\(observedMinutes(estimate)) min observed, confidence "
+                + "\(estimate.confidence.rawValue)): "
+                + (estimate.smoothedMinutes.map(durationString(minutes:)) ?? "n/a"),
+        ]
     }
 
     /// The plain-text lines of the battery details, without the process list. The app
@@ -54,26 +99,26 @@ public enum Formatting {
                 "Battery \(status.percent) %, \(String(format: "%.1f", status.remainingWattHours)) Wh remaining"
             ]
             switch status.state {
-            case .discharging:
+            case .discharging, .drainingOnExternalPower:
                 lines.append("Drawing \(watts(status.drawWatts)) now")
-                if let estimate = status.estimate {
-                    lines.append("Time left at current draw: "
-                        + (estimate.instantMinutes.map(durationString(minutes:)) ?? "n/a"))
-                    let observedMinutes = Int((estimate.observedSeconds / 60).rounded())
-                    lines.append("Time left, smoothed (\(observedMinutes) min observed, confidence "
-                        + "\(estimate.confidence.rawValue)): "
-                        + (estimate.smoothedMinutes.map(durationString(minutes:)) ?? "n/a"))
-                } else {
-                    lines.append("Time left: waiting for the first gauge reading")
-                }
+                lines += timeLines(status.estimate, .toEmpty)
                 lines.append("macOS estimate: "
-                    + (status.systemTimeToEmptyMinutes.map(durationString(minutes:)) ?? "not yet available"))
+                    + (status.systemTimeToEmptyMinutes.map(durationString(minutes:)) ?? notYetAvailableText))
+                if status.state == .drainingOnExternalPower {
+                    lines.append("Power source: \(weakSourceText)")
+                }
             case .charging:
                 lines.append("Charging at \(watts(-status.drawWatts))")
-                lines.append("Time to full (macOS estimate): "
-                    + (status.avgTimeToFullMinutes.map(durationString(minutes:)) ?? "not yet available"))
+                lines += timeLines(status.estimate, .toFull)
+                lines.append("macOS estimate: "
+                    + (status.avgTimeToFullMinutes.map(durationString(minutes:)) ?? notYetAvailableText))
             case .onExternalPower(let fullyCharged):
                 lines.append(fullyCharged ? "On AC power, fully charged" : "On AC power, not charging")
+            case .powerSourceChanging:
+                lines.append("Power: \(powerSourceChangingText)")
+            }
+            if let adapterWatts = status.adapterWatts, status.state != .powerSourceChanging {
+                lines.append("Source rating: \(adapterWatts) W")
             }
             return lines
         }

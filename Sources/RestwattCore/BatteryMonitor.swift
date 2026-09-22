@@ -12,16 +12,19 @@ public struct BatteryStatus: Equatable, Sendable {
     public var state: PowerState
     public var percent: Int
     public var remainingWattHours: Double
-    /// Positive while discharging, negative while charging.
+    /// Positive while the battery supplies energy, negative while it takes energy in.
     public var drawWatts: Double
-    /// Nil while charging or before the first discharge sample.
+    /// Time to empty while draining, time to full while charging; nil in the neutral states
+    /// and before the first sample of the current direction.
     public var estimate: Estimate?
-    /// macOS's own time to empty, for comparison.
+    /// macOS's own time to empty, for comparison; only while draining.
     public var systemTimeToEmptyMinutes: Int?
-    /// Gauge time to full, only meaningful while charging.
+    /// Gauge time to full, for comparison; only while charging.
     public var avgTimeToFullMinutes: Int?
     public var processReport: ProcessEnergyReport
     public var sampledAt: TimeInterval
+    /// Rated power of the external source in watts, if the gauge reports it.
+    public var adapterWatts: Int?
 
     public init(
         state: PowerState,
@@ -32,7 +35,8 @@ public struct BatteryStatus: Equatable, Sendable {
         systemTimeToEmptyMinutes: Int?,
         avgTimeToFullMinutes: Int?,
         processReport: ProcessEnergyReport,
-        sampledAt: TimeInterval
+        sampledAt: TimeInterval,
+        adapterWatts: Int? = nil
     ) {
         self.state = state
         self.percent = percent
@@ -43,6 +47,7 @@ public struct BatteryStatus: Equatable, Sendable {
         self.avgTimeToFullMinutes = avgTimeToFullMinutes
         self.processReport = processReport
         self.sampledAt = sampledAt
+        self.adapterWatts = adapterWatts
     }
 }
 
@@ -58,8 +63,13 @@ public final class BatteryMonitor {
     private let processes: ProcessReading
     private let clock: ClockReading
 
-    private var estimator = TimeToEmptyEstimator()
+    private var estimator = EnergyFlowEstimator()
     private var lastUpdateTime: Int?
+    private var lastExternalConnected: Bool?
+    private var lastState: PowerState?
+    /// `UpdateTime` of a gauge reading that provably predates a plug or unplug event; while
+    /// the gauge still reports it, no flow figures are shown.
+    private var settlingUpdateTime: Int?
     private var previousProcesses: [ProcessEnergySample] = []
     private var previousProcessTime: TimeInterval?
 
@@ -80,18 +90,30 @@ public final class BatteryMonitor {
             return .unavailable(reason: "Battery data unreadable")
         }
 
-        let state = snapshot.powerState
+        let state = presentedState(for: snapshot)
         let drawWatts = PowerMath.drawWatts(snapshot)
         let remainingWattHours = PowerMath.remainingWattHours(snapshot)
 
-        if state.isDischarging {
-            if snapshot.updateTime != lastUpdateTime {
-                estimator.add(time: now, remainingWattHours: remainingWattHours, drawWatts: drawWatts)
-            }
-        } else {
+        // The smoothing restarts whenever the presented state changes: on a flip of the flow
+        // direction, and also between battery-only and weak-source draining, where the
+        // measured watts change meaning (whole system draw versus the source's shortfall).
+        if state != lastState {
             estimator.reset()
         }
+        if snapshot.updateTime != lastUpdateTime {
+            switch state {
+            case .discharging, .drainingOnExternalPower:
+                estimator.add(time: now, energyWattHours: remainingWattHours, watts: drawWatts)
+            case .charging:
+                estimator.add(
+                    time: now, energyWattHours: PowerMath.missingWattHours(snapshot), watts: -drawWatts)
+            case .onExternalPower, .powerSourceChanging:
+                break
+            }
+        }
         lastUpdateTime = snapshot.updateTime
+        lastExternalConnected = snapshot.externalConnected
+        lastState = state
 
         let currentProcesses = processes.readProcesses()
         let dt = previousProcessTime.map { now - $0 } ?? 0
@@ -100,7 +122,7 @@ public final class BatteryMonitor {
             current: currentProcesses,
             dt: dt,
             drawWatts: drawWatts,
-            isDischarging: state.isDischarging
+            batteryIsOnlySource: state.isOnBatteryOnly
         )
         previousProcesses = currentProcesses
         previousProcessTime = now
@@ -110,11 +132,32 @@ public final class BatteryMonitor {
             percent: snapshot.currentCapacityPercent,
             remainingWattHours: remainingWattHours,
             drawWatts: drawWatts,
-            estimate: state.isDischarging ? estimator.estimate : nil,
-            systemTimeToEmptyMinutes: state.isDischarging ? snapshot.systemTimeToEmptyMinutes : nil,
+            estimate: estimator.estimate,
+            systemTimeToEmptyMinutes: state.isDraining ? snapshot.systemTimeToEmptyMinutes : nil,
             avgTimeToFullMinutes: state == .charging ? snapshot.avgTimeToFullMinutes : nil,
             processReport: report,
-            sampledAt: now
+            sampledAt: now,
+            adapterWatts: snapshot.adapterWatts
         ))
+    }
+
+    /// The snapshot's own state, unless the reading provably predates a power source change.
+    ///
+    /// Plugging in or unplugging triggers an immediate resample, but the gauge's flow values
+    /// (`Amperage`, `BatteryPower`) only change together with `UpdateTime`, up to a minute
+    /// later. If `ExternalConnected` flipped while `UpdateTime` stayed the same, the flow
+    /// values are from before the change and would show a wrong direction; those readings are
+    /// presented as `.powerSourceChanging` until `UpdateTime` moves on. A flip that arrives
+    /// together with a new `UpdateTime` is trusted as is.
+    private func presentedState(for snapshot: BatterySnapshot) -> PowerState {
+        if let lastExternalConnected, lastExternalConnected != snapshot.externalConnected,
+           snapshot.updateTime == lastUpdateTime {
+            settlingUpdateTime = snapshot.updateTime
+        }
+        if let settlingUpdateTime, settlingUpdateTime == snapshot.updateTime {
+            return .powerSourceChanging
+        }
+        settlingUpdateTime = nil
+        return snapshot.powerState
     }
 }

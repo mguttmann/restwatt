@@ -32,6 +32,9 @@ public struct BatterySnapshot: Equatable, Sendable {
     public var avgTimeToFullMinutes: Int?
     /// IOPowerSources `Time to Empty` in minutes (the estimate `pmset` shows); nil if negative.
     public var systemTimeToEmptyMinutes: Int?
+    /// `AdapterDetails.Watts`, the external source's rating in watts; nil when no source is
+    /// connected or the key is absent (a non-PD source may not report it).
+    public var adapterWatts: Int?
 
     public init(
         updateTime: Int,
@@ -47,7 +50,8 @@ public struct BatterySnapshot: Equatable, Sendable {
         fullyCharged: Bool,
         avgTimeToEmptyMinutes: Int?,
         avgTimeToFullMinutes: Int?,
-        systemTimeToEmptyMinutes: Int?
+        systemTimeToEmptyMinutes: Int?,
+        adapterWatts: Int? = nil
     ) {
         self.updateTime = updateTime
         self.voltageMilliVolts = voltageMilliVolts
@@ -63,27 +67,51 @@ public struct BatterySnapshot: Equatable, Sendable {
         self.avgTimeToEmptyMinutes = avgTimeToEmptyMinutes
         self.avgTimeToFullMinutes = avgTimeToFullMinutes
         self.systemTimeToEmptyMinutes = systemTimeToEmptyMinutes
+        self.adapterWatts = adapterWatts
     }
 
-    /// Where the Mac draws its power from right now.
+    /// Where the Mac draws its power from right now, decided by the net energy flow of the
+    /// battery rather than by the gauge's flags alone: a source that delivers less than the
+    /// Mac uses leaves the battery draining even though `ExternalConnected` is set.
+    /// `.powerSourceChanging` is never derived here; the monitor produces it (see there).
     public var powerState: PowerState {
         if !externalConnected {
             return .discharging
         }
-        if isCharging {
+        let net = PowerMath.drawWatts(self)
+        if net >= PowerMath.flowDeadBandWatts {
+            return .drainingOnExternalPower
+        }
+        if net <= -PowerMath.flowDeadBandWatts {
             return .charging
         }
         return .onExternalPower(fullyCharged: fullyCharged)
     }
 }
 
-/// Derived from `ExternalConnected`, `IsCharging` and `FullyCharged`.
+/// Derived from `ExternalConnected` and the net energy flow; `FullyCharged` only matters
+/// inside the dead band around zero flow.
 public enum PowerState: Equatable, Sendable {
+    /// No external source; the battery supplies everything.
     case discharging
+    /// An external source is connected but delivers less than the Mac uses; the battery
+    /// supplies the difference.
+    case drainingOnExternalPower
+    /// Energy flows into the battery.
     case charging
+    /// An external source is connected and the net flow is inside the dead band.
     case onExternalPower(fullyCharged: Bool)
+    /// The source was just plugged in or unplugged and the gauge reading still predates the
+    /// change, so the flow figures do not describe the new situation yet.
+    case powerSourceChanging
 
-    public var isDischarging: Bool {
+    /// Energy leaves the battery, with or without an external source.
+    public var isDraining: Bool {
+        self == .discharging || self == .drainingOnExternalPower
+    }
+
+    /// The battery is the only source, so its draw is the whole system draw.
+    public var isOnBatteryOnly: Bool {
         self == .discharging
     }
 }

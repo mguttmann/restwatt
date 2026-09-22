@@ -4,7 +4,8 @@ import Foundation
 /// click menu. The strings are final user-visible text; the app layer only lays them out.
 public struct DetailRow: Equatable, Sendable {
     public enum Emphasis: Equatable, Sendable {
-        /// The figures to read at a glance: current draw and the two time-left values.
+        /// The figures to read at a glance: the current draw or charging power, the two time
+        /// values, and the one-line state notes (weak source, source changing, on AC).
         case primary
         /// Supporting information.
         case secondary
@@ -36,38 +37,47 @@ extension Formatting {
                 DetailRow("Battery", "\(status.percent) %, \(String(format: "%.1f", status.remainingWattHours)) Wh")
             ]
             switch status.state {
-            case .discharging:
+            case .discharging, .drainingOnExternalPower:
                 rows.append(DetailRow("Drawing now", watts(status.drawWatts), emphasis: .primary))
-                if let estimate = status.estimate {
-                    rows.append(DetailRow(
-                        "Time left at current draw",
-                        estimate.instantMinutes.map(durationString(minutes:)) ?? "n/a",
-                        emphasis: .primary))
-                    rows.append(DetailRow(
-                        "Time left, smoothed",
-                        estimate.smoothedMinutes.map(durationString(minutes:)) ?? "n/a",
-                        emphasis: .primary))
-                    let observedMinutes = Int((estimate.observedSeconds / 60).rounded())
-                    rows.append(DetailRow(
-                        "Smoothing", "\(observedMinutes) min observed, confidence \(estimate.confidence.rawValue)"))
-                } else {
-                    rows.append(DetailRow("Time left", "waiting for the first gauge reading", emphasis: .primary))
-                }
+                rows += timeRows(status.estimate, .toEmpty)
                 rows.append(DetailRow(
                     "macOS estimate",
-                    status.systemTimeToEmptyMinutes.map(durationString(minutes:)) ?? "not yet available"))
+                    status.systemTimeToEmptyMinutes.map(durationString(minutes:)) ?? notYetAvailableText))
+                if status.state == .drainingOnExternalPower {
+                    rows.append(DetailRow("Power source", weakSourceText, emphasis: .primary))
+                }
             case .charging:
                 rows.append(DetailRow("Charging at", watts(-status.drawWatts), emphasis: .primary))
+                rows += timeRows(status.estimate, .toFull)
                 rows.append(DetailRow(
-                    "Time to full (macOS estimate)",
-                    status.avgTimeToFullMinutes.map(durationString(minutes:)) ?? "not yet available",
-                    emphasis: .primary))
+                    "macOS estimate",
+                    status.avgTimeToFullMinutes.map(durationString(minutes:)) ?? notYetAvailableText))
             case .onExternalPower(let fullyCharged):
                 rows.append(DetailRow(
                     "Power", fullyCharged ? "On AC, fully charged" : "On AC, not charging", emphasis: .primary))
+            case .powerSourceChanging:
+                rows.append(DetailRow("Power", powerSourceChangingText, emphasis: .primary))
+            }
+            if let adapterWatts = status.adapterWatts, status.state != .powerSourceChanging {
+                rows.append(DetailRow("Source rating", "\(adapterWatts) W"))
             }
             return rows
         }
+    }
+
+    /// The time rows of an estimate (both times primary, the smoothing note secondary), or
+    /// the waiting row without one. Mirrors `timeLines`.
+    private static func timeRows(_ estimate: Estimate?, _ labels: TimeLabels) -> [DetailRow] {
+        guard let estimate else {
+            return [DetailRow(labels.waiting, waitingForGaugeText, emphasis: .primary)]
+        }
+        return [
+            DetailRow(labels.atCurrent, estimate.instantMinutes.map(durationString(minutes:)) ?? "n/a",
+                      emphasis: .primary),
+            DetailRow(labels.smoothed, estimate.smoothedMinutes.map(durationString(minutes:)) ?? "n/a",
+                      emphasis: .primary),
+            DetailRow("Smoothing", "\(observedMinutes(estimate)) min observed, confidence \(estimate.confidence.rawValue)"),
+        ]
     }
 
     /// The process list as rows: a heading, `limit` process entries, and the total.

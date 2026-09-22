@@ -9,13 +9,15 @@ public enum Confidence: String, Equatable, Sendable {
 
 /// The estimator's current answer.
 public struct Estimate: Equatable, Sendable {
-    /// Draw of the most recent sample, in watts.
+    /// Power of the most recent sample, in watts (always positive; the direction is the
+    /// monitor's business).
     public var instantWatts: Double
-    /// Adaptively smoothed draw, in watts.
+    /// Adaptively smoothed power, in watts.
     public var smoothedWatts: Double
-    /// Minutes to empty at the most recent draw ("if it keeps drawing like right now").
+    /// Minutes until the target (empty while draining, full while charging) at the most recent
+    /// power ("if it keeps going like right now").
     public var instantMinutes: Int?
-    /// Minutes to empty at the smoothed draw. Shown in the menu bar.
+    /// Minutes until the target at the smoothed power. Shown in the menu bar.
     public var smoothedMinutes: Int?
     /// Seconds between the first and the latest accepted sample.
     public var observedSeconds: TimeInterval
@@ -24,14 +26,16 @@ public struct Estimate: Equatable, Sendable {
     public var confidence: Confidence
 }
 
-/// Adaptive exponentially weighted moving average of the battery draw.
+/// Adaptive exponentially weighted moving average of the energy flow through the battery,
+/// in either direction: fed with the draw and the remaining energy while draining, with the
+/// charging power and the missing energy while charging.
 ///
-/// The very first sample is taken as is, so the first estimate equals "at current draw".
+/// The very first sample is taken as is, so the first estimate equals "at current power".
 /// The time constant grows with the observation window (`observed / rampDivisor`, clamped to
 /// `[tauMin, tauMax]`), so early samples move the estimate a lot and, after half an hour,
-/// a single noisy gauge reading barely moves it. A lasting change in draw still shows up
+/// a single noisy gauge reading barely moves it. A lasting change in power still shows up
 /// within a few multiples of `tauMax`.
-public struct TimeToEmptyEstimator: Equatable, Sendable {
+public struct EnergyFlowEstimator: Equatable, Sendable {
     /// Smallest time constant, used while the observation window is short.
     public static let tauMin: TimeInterval = 60
     /// Largest time constant, reached after `tauMax * rampDivisor` seconds of observation.
@@ -45,17 +49,17 @@ public struct TimeToEmptyEstimator: Equatable, Sendable {
 
     private var smoothedWatts: Double = 0
     private var latestWatts: Double = 0
-    private var latestRemainingWattHours: Double = 0
+    private var latestEnergyWattHours: Double = 0
     private var observedSeconds: TimeInterval = 0
     private var lastSampleTime: TimeInterval?
     private var sampleCount = 0
 
     public init() {}
 
-    /// Feed one discharge sample. Samples with a non-positive draw, or not later than the
-    /// previous one, are ignored.
-    public mutating func add(time: TimeInterval, remainingWattHours: Double, drawWatts: Double) {
-        guard drawWatts > 0 else {
+    /// Feed one sample: the energy still to be moved and the power moving it, both positive.
+    /// Samples with a non-positive power, or not later than the previous one, are ignored.
+    public mutating func add(time: TimeInterval, energyWattHours: Double, watts: Double) {
+        guard watts > 0 else {
             return
         }
         if let last = lastSampleTime {
@@ -66,13 +70,13 @@ public struct TimeToEmptyEstimator: Equatable, Sendable {
             observedSeconds += dt
             let tau = min(max(observedSeconds / Self.rampDivisor, Self.tauMin), Self.tauMax)
             let alpha = 1 - exp(-dt / tau)
-            smoothedWatts += alpha * (drawWatts - smoothedWatts)
+            smoothedWatts += alpha * (watts - smoothedWatts)
         } else {
-            smoothedWatts = drawWatts
+            smoothedWatts = watts
             observedSeconds = 0
         }
-        latestWatts = drawWatts
-        latestRemainingWattHours = remainingWattHours
+        latestWatts = watts
+        latestEnergyWattHours = energyWattHours
         lastSampleTime = time
         sampleCount += 1
     }
@@ -85,19 +89,17 @@ public struct TimeToEmptyEstimator: Equatable, Sendable {
         return Estimate(
             instantWatts: latestWatts,
             smoothedWatts: smoothedWatts,
-            instantMinutes: PowerMath.minutesToEmpty(
-                remainingWattHours: latestRemainingWattHours, watts: latestWatts),
-            smoothedMinutes: PowerMath.minutesToEmpty(
-                remainingWattHours: latestRemainingWattHours, watts: smoothedWatts),
+            instantMinutes: PowerMath.minutes(energyWattHours: latestEnergyWattHours, watts: latestWatts),
+            smoothedMinutes: PowerMath.minutes(energyWattHours: latestEnergyWattHours, watts: smoothedWatts),
             observedSeconds: observedSeconds,
             sampleCount: sampleCount,
             confidence: Self.confidence(observedSeconds: observedSeconds)
         )
     }
 
-    /// Forget everything, for example when the Mac is plugged in.
+    /// Forget everything, for example when the direction of the energy flow flips.
     public mutating func reset() {
-        self = TimeToEmptyEstimator()
+        self = EnergyFlowEstimator()
     }
 
     static func confidence(observedSeconds: TimeInterval) -> Confidence {

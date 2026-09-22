@@ -27,7 +27,8 @@ public struct ProcessEnergyReport: Equatable, Sendable {
     public var visibleTotalWatts: Double
     /// Number of pids that contributed a valid delta.
     public var processCount: Int
-    /// Battery draw not explained by visible processes; nil unless discharging.
+    /// Battery draw not explained by visible processes; nil unless the battery is the only
+    /// source (with an external source connected the battery draw is not the system draw).
     public var unaccountedWatts: Double?
     /// True until two consecutive readings exist.
     public var isWarmingUp: Bool
@@ -63,7 +64,7 @@ public enum ProcessEnergyRanker {
         current: [ProcessEnergySample],
         dt: TimeInterval,
         drawWatts: Double,
-        isDischarging: Bool,
+        batteryIsOnlySource: Bool,
         limit: Int = defaultLimit
     ) -> ProcessEnergyReport {
         guard dt > 0, !previous.isEmpty else {
@@ -107,7 +108,7 @@ public enum ProcessEnergyRanker {
             entries: Array(sorted.prefix(limit)),
             visibleTotalWatts: total,
             processCount: processCount,
-            unaccountedWatts: isDischarging ? max(0, drawWatts - total) : nil,
+            unaccountedWatts: batteryIsOnlySource ? max(0, drawWatts - total) : nil,
             isWarmingUp: false
         )
     }

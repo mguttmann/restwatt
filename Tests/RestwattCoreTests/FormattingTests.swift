@@ -22,25 +22,51 @@ final class FormattingTests: XCTestCase {
         instantWatts: 7.138, smoothedWatts: 7.5, instantMinutes: 529, smoothedMinutes: 492,
         observedSeconds: 2520, sampleCount: 43, confidence: .high)
 
-    private func charging(minutes: Int?) -> DisplayModel {
+    /// Restwatt's own time to full for the measured 96 W charge, first sample.
+    private let chargeEstimate = Estimate(
+        instantWatts: 49.055, smoothedWatts: 49.055, instantMinutes: 22, smoothedMinutes: 22,
+        observedSeconds: 0, sampleCount: 1, confidence: .low)
+
+    private func charging(estimate: Estimate?, gaugeMinutes: Int?, adapterWatts: Int? = 96) -> DisplayModel {
         .battery(BatteryStatus(
-            state: .charging, percent: 95, remainingWattHours: 62.975, drawWatts: -25.18,
-            estimate: nil, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: minutes,
-            processReport: report, sampledAt: 0))
+            state: .charging, percent: 75, remainingWattHours: 51.736, drawWatts: -49.055,
+            estimate: estimate, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: gaugeMinutes,
+            processReport: report, sampledAt: 0, adapterWatts: adapterWatts))
     }
 
-    private func onAC(fullyCharged: Bool) -> DisplayModel {
+    /// The synthetic weak source: 2.3 W still leave the battery, 1667 min at that rate.
+    private let weakEstimate = Estimate(
+        instantWatts: 2.266, smoothedWatts: 2.266, instantMinutes: 1667, smoothedMinutes: 1667,
+        observedSeconds: 0, sampleCount: 1, confidence: .low)
+
+    private func weakSource(estimate: Estimate?, adapterWatts: Int? = 30) -> DisplayModel {
+        .battery(BatteryStatus(
+            state: .drainingOnExternalPower, percent: 95, remainingWattHours: 62.975, drawWatts: 2.266,
+            estimate: estimate, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: nil,
+            processReport: report, sampledAt: 0, adapterWatts: adapterWatts))
+    }
+
+    private func onAC(fullyCharged: Bool, adapterWatts: Int? = nil) -> DisplayModel {
         .battery(BatteryStatus(
             state: .onExternalPower(fullyCharged: fullyCharged), percent: 100, remainingWattHours: 70.2,
             drawWatts: 0, estimate: nil, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: nil,
-            processReport: .warmingUp, sampledAt: 0))
+            processReport: .warmingUp, sampledAt: 0, adapterWatts: adapterWatts))
+    }
+
+    private var sourceChanging: DisplayModel {
+        .battery(BatteryStatus(
+            state: .powerSourceChanging, percent: 95, remainingWattHours: 62.975, drawWatts: 7.138,
+            estimate: nil, systemTimeToEmptyMinutes: nil, avgTimeToFullMinutes: nil,
+            processReport: .warmingUp, sampledAt: 0, adapterWatts: 96))
     }
 
     private var allModels: [DisplayModel] {
         [
             discharging(estimate: estimate), discharging(estimate: nil),
-            charging(minutes: 65), charging(minutes: nil),
-            onAC(fullyCharged: true), onAC(fullyCharged: false),
+            weakSource(estimate: weakEstimate), weakSource(estimate: nil, adapterWatts: nil),
+            charging(estimate: chargeEstimate, gaugeMinutes: 50), charging(estimate: nil, gaugeMinutes: nil),
+            onAC(fullyCharged: true), onAC(fullyCharged: false, adapterWatts: 96),
+            sourceChanging,
             .unavailable(reason: "No battery found"),
         ]
     }
@@ -48,11 +74,21 @@ final class FormattingTests: XCTestCase {
     func testMenuBarTitles() {
         XCTAssertEqual(Formatting.menuBarTitle(discharging(estimate: estimate)), "7.1 W  8:12")
         XCTAssertEqual(Formatting.menuBarTitle(discharging(estimate: nil)), "7.1 W  --:--")
-        XCTAssertEqual(Formatting.menuBarTitle(charging(minutes: 65)), "Charging  1:05")
-        XCTAssertEqual(Formatting.menuBarTitle(charging(minutes: nil)), "Charging")
+        XCTAssertEqual(Formatting.menuBarTitle(weakSource(estimate: weakEstimate)), "2.3 W  27:47  weak source")
+        XCTAssertEqual(Formatting.menuBarTitle(weakSource(estimate: nil)), "2.3 W  --:--  weak source")
+        XCTAssertEqual(Formatting.menuBarTitle(charging(estimate: chargeEstimate, gaugeMinutes: 50)), "Charging  0:22",
+                       "the title carries Restwatt's own time, not the gauge's")
+        XCTAssertEqual(Formatting.menuBarTitle(charging(estimate: nil, gaugeMinutes: 50)), "Charging")
         XCTAssertEqual(Formatting.menuBarTitle(onAC(fullyCharged: false)), "On AC")
         XCTAssertEqual(Formatting.menuBarTitle(onAC(fullyCharged: true)), "On AC  100 %")
+        XCTAssertEqual(Formatting.menuBarTitle(sourceChanging), "95 %")
         XCTAssertEqual(Formatting.menuBarTitle(.unavailable(reason: "No battery found")), "No battery")
+    }
+
+    func testChargingTitleWithoutMinutesOnTheEstimate() {
+        var noMinutes = chargeEstimate
+        noMinutes.smoothedMinutes = nil
+        XCTAssertEqual(Formatting.menuBarTitle(charging(estimate: noMinutes, gaugeMinutes: 50)), "Charging")
     }
 
     func testTitleShowsSmoothedNotInstantTime() {
@@ -93,6 +129,48 @@ final class FormattingTests: XCTestCase {
         XCTAssertTrue(ac.contains("On AC power, not charging"))
         XCTAssertTrue(ac.contains("collecting the first interval"))
         XCTAssertFalse(ac.contains("unaccounted"))
+        XCTAssertFalse(ac.contains("Source rating"), "no rating row without the gauge key")
+    }
+
+    func testWeakSourceLines() {
+        XCTAssertEqual(Formatting.summaryLines(weakSource(estimate: weakEstimate)), [
+            "Battery 95 %, 63.0 Wh remaining",
+            "Drawing 2.3 W now",
+            "Time left at current draw: 27:47",
+            "Time left, smoothed (0 min observed, confidence low): 27:47",
+            "macOS estimate: not yet available",
+            "Power source: connected, but it delivers less than the Mac uses",
+            "Source rating: 30 W",
+        ])
+        let lines = Formatting.summaryLines(weakSource(estimate: nil, adapterWatts: nil))
+        XCTAssertEqual(lines[2], "Time left: waiting for the first gauge reading")
+        XCTAssertEqual(lines.last, "Power source: connected, but it delivers less than the Mac uses")
+    }
+
+    func testChargingLines() {
+        XCTAssertEqual(Formatting.summaryLines(charging(estimate: chargeEstimate, gaugeMinutes: 50)), [
+            "Battery 75 %, 51.7 Wh remaining",
+            "Charging at 49.1 W",
+            "Time to full at current power: 0:22",
+            "Time to full, smoothed (0 min observed, confidence low): 0:22",
+            "macOS estimate: 0:50",
+            "Source rating: 96 W",
+        ])
+        let lines = Formatting.summaryLines(charging(estimate: nil, gaugeMinutes: nil, adapterWatts: nil))
+        XCTAssertEqual(lines[2], "Time to full: waiting for the first gauge reading")
+        XCTAssertEqual(lines.last, "macOS estimate: not yet available")
+    }
+
+    func testSourceChangingAndRatedExternalPowerLines() {
+        XCTAssertEqual(Formatting.summaryLines(sourceChanging), [
+            "Battery 95 %, 63.0 Wh remaining",
+            "Power: power source changed, waiting for the gauge",
+        ])
+        XCTAssertEqual(Formatting.summaryLines(onAC(fullyCharged: false, adapterWatts: 96)), [
+            "Battery 100 %, 70.2 Wh remaining",
+            "On AC power, not charging",
+            "Source rating: 96 W",
+        ])
     }
 
     func testMenuLinesShowTopFiveAndVersion() {

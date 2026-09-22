@@ -2,19 +2,33 @@
 
 A small, native macOS menu bar app that shows how much power your Mac is drawing from
 its battery right now, how long the battery will last at that rate, and which of your
-processes are burning the most energy. The estimate starts from the current draw and
-gets steadier the longer the app runs.
+processes are burning the most energy. While the battery charges it shows the charging
+power and its own time to full instead. Both estimates start from the current value and
+get steadier the longer the app runs.
 
 Pure Swift on AppKit, IOKit and libproc. No Electron, no web view, no dependencies, no
 network, nothing written to disk.
 
 ## What it shows
 
-**Menu bar title** while discharging: the current draw in watts and the smoothed time
-to empty as `h:mm`, for example `7.9 W  8:12`. Until the first gauge reading arrives it
-shows `--:--`. While charging the title reads `Charging` plus macOS's own time to full
-when the gauge knows it; on AC power without charging it reads `On AC` (with the
-percentage once the battery is full). Without a battery it reads `No battery`.
+**Menu bar title** while the battery is draining: the current draw in watts and the
+smoothed time to empty as `h:mm`, for example `7.9 W  8:12`. Until the first gauge
+reading arrives it shows `--:--`. The state is decided by the direction of the energy
+flow through the battery, not by whether something is plugged in:
+
+- Energy leaves the battery and no external source is connected: `7.9 W  8:12`.
+- Energy leaves the battery although an external source is connected (a power bank or a
+  small adapter that delivers less than the Mac uses): the same figures plus the marker
+  `weak source`, for example `2.3 W  27:47  weak source`. The watts are what the battery
+  still supplies on top of the source, not the whole system draw.
+- Energy enters the battery: `Charging` plus Restwatt's own smoothed time to full, for
+  example `Charging  0:22`; just `Charging` until the first estimate exists.
+- An external source is connected and the net flow is inside a small dead band around
+  zero: `On AC`, or `On AC  100 %` once the gauge reports the battery as fully charged.
+- The source was just plugged in or unplugged and the gauge has not caught up yet: only
+  the charge level, for example `95 %` (see "Which state is shown" below).
+
+Without a battery it reads `No battery`.
 
 **Mouseover** on the item opens a popover with the details, without a click. It appears
 after a short delay while the pointer rests on the item and closes shortly after the
@@ -39,10 +53,30 @@ Restwatt                                 0.01 W
 Visible total    0.63 W over 105 processes, unaccounted 6.51 W
 ```
 
-While charging the primary rows are `Charging at` and `Time to full (macOS estimate)`;
-on AC power without charging a single `Power` row says `On AC, fully charged` or
-`On AC, not charging`. Before the first estimate the time-left row reads `waiting for
-the first gauge reading`.
+With a weak source the same rows appear, `Drawing now` being what the battery still
+supplies, followed by a `Power source` row that says `connected, but it delivers less
+than the Mac uses`. While charging the rows are `Charging at`, `Time to full at current
+power`, `Time to full, smoothed` with the same `Smoothing` note, and `macOS estimate`
+for the gauge's own time to full (or `not yet available` when the gauge does not know
+one):
+
+```
+Battery                          75 %, 51.7 Wh
+Charging at                             49.1 W
+Time to full at current power             0:22
+Time to full, smoothed                    0:22
+Smoothing         0 min observed, confidence low
+macOS estimate                            0:50
+Source rating                             96 W
+```
+
+`Source rating` is the rated power of the connected source as the gauge reports it
+(`AdapterDetails.Watts`); the row appears in every state with a source connected, except
+while the source is changing, and is omitted when the gauge does not report a rating. On
+AC power inside the dead band a single `Power` row says `On AC, fully charged` or
+`On AC, not charging`; while the source is changing it says `power source changed,
+waiting for the gauge`. Before the first estimate the time row reads `waiting for the
+first gauge reading`.
 
 The popover does not take focus away from the app you are working in and is rebuilt from
 the latest sample whenever it is shown or a new sample arrives while it is visible. It
@@ -72,28 +106,58 @@ each reading it derives:
 - **Remaining energy in Wh**: remaining charge (mAh) times the present voltage. It is
   deliberately not derived from the percentage, because the gauge's full-charge
   capacity drifts between readings.
+- **Missing energy in Wh**: full-charge capacity minus remaining charge, times the
+  present voltage, never below zero (the full-charge capacity can briefly sit below the
+  remaining charge while it drifts).
 - **Time left at current draw**: remaining Wh divided by the current draw. This is the
   "if it keeps drawing like right now" figure.
+- **Time to full at current power**: missing Wh divided by the current charging power,
+  the same figure in the other direction.
 
-The **smoothed** time left uses an adaptive exponentially weighted moving average of
-the draw:
+The **smoothed** time uses an adaptive exponentially weighted moving average of the
+power flowing through the battery. One estimator serves both directions: while the
+battery drains it is fed with the draw and the remaining energy, while it charges with
+the charging power and the missing energy.
 
-1. The first sample is taken as is, so the first estimate equals the current-draw one.
-2. Every later sample moves the smoothed draw by a fraction that depends on a time
+1. The first sample is taken as is, so the first estimate equals the one at current power.
+2. Every later sample moves the smoothed power by a fraction that depends on a time
    constant. The time constant is half the observation window so far, clamped between
-   60 seconds and 1800 seconds (30 minutes). Early on, the estimate follows the draw
+   60 seconds and 1800 seconds (30 minutes). Early on, the estimate follows the power
    closely; after half an hour a single noisy gauge reading barely moves it, while a
    lasting change in your workload still shows up within a few multiples of 30 minutes.
 3. A **confidence** level is shown next to it: `low` below 5 minutes of observation,
    `medium` below 30 minutes, `high` from 30 minutes on.
 
 Duplicate gauge readings (same `UpdateTime`) are not fed into the estimator, so polling
-more often than the gauge refreshes does not distort the average. Plugging in resets the
-estimator; unplugging starts it fresh. Nothing is persisted: the estimate lives for one
-session of the app.
+more often than the gauge refreshes does not distort the average. The smoothing restarts
+whenever the shown state changes: when the direction of the flow flips between draining
+and charging, when a weak source is plugged into a Mac running on battery (the draw
+changes meaning from "whole system" to "what the source does not cover"), and around a
+plug or unplug event. Nothing is persisted: the estimate lives for one session of the
+app.
 
-Below a draw of 0.1 W no time to empty is shown. Times above 5999 minutes are shown as
-`> 99 h`.
+Below a power of 0.1 W no time is shown in either direction. Times above 5999 minutes
+are shown as `> 99 h`.
+
+### Which state is shown
+
+With no external source connected the battery is draining, whatever the sign of the
+gauge's current. With a source connected the net flow decides: a battery draw of 0.5 W
+or more means `weak source` draining, a charging power of 0.5 W or more means charging,
+anything in between is `On AC` and claims no power and no time. The dead band exists so
+that a trickle around zero cannot flip the display back and forth; there is no further
+hysteresis. The gauge's `IsCharging` flag does not override the sign, because a source
+that delivers less than the Mac uses can leave the battery draining while the flags say
+otherwise.
+
+Plugging in or unplugging triggers an immediate re-sample, but the gauge's current and
+power figures only change together with its `UpdateTime`, which can be up to a gauge
+refresh later. A reading whose `ExternalConnected` flag flipped while its `UpdateTime`
+stayed the same provably predates the change, so Restwatt shows only the charge level
+(`95 %`, row `power source changed, waiting for the gauge`) until the gauge moves on,
+instead of a stale direction (a fresh charger shown as `weak source`, or a negative draw
+right after unplugging). A flip that arrives together with a new `UpdateTime` is trusted
+as is.
 
 ### What it cannot know
 
@@ -104,6 +168,22 @@ Below a draw of 0.1 W no time to empty is shown. Times above 5999 minutes are sh
   or as it has been on average (smoothed). Opening a video call will invalidate either.
 - macOS keeps its own time-to-empty estimators, and they disagree with each other. The
   details show the one `pmset -g batt` shows, labelled `macOS estimate`, for comparison.
+  While charging the same row shows the gauge's own `AvgTimeToFull`, when it knows one.
+- **The time to full is linear.** Restwatt divides the missing energy by the smoothed
+  charging power and knows nothing about the charge curve: near a full charge the
+  charger reduces the current and the last part takes longer than the arithmetic
+  suggests. So while the power is still high, Restwatt's figure is shorter than macOS's
+  (in the measured 96 W reading in the test suite, 0:22 next to the gauge's 0:50); it
+  catches up as the power falls, because the smoothing follows it. Both figures are
+  shown so you can compare.
+- **Weak sources were not measured.** The charging path was verified against a gauge
+  reading taken on a 96 W USB-C charger. The `weak source`, slow-charge and near-zero
+  states are covered by synthetic unit-test fixtures only; nobody had a power bank or a
+  small adapter at hand. The design relies on the sign of the gauge's current and on
+  `ExternalConnected` being set while a source is connected, not on the flags, but that
+  the gauge behaves that way on a weak source is an expectation, not a measurement.
+  `AdapterDetails.Watts` may be absent on a source that does not negotiate USB-C PD; the
+  `Source rating` row is then simply omitted.
 - The **process list is a partial picture and an estimate**. It ranks the processes your
   user account may inspect by the kernel's per-process CPU energy counter
   (`ri_energy_nj` from `proc_pid_rusage`), aggregated by process name, as average watts
@@ -157,10 +237,11 @@ background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the ass
 - Nothing is written to disk. There is no preferences file and no history.
 - From the battery registry entry only these keys are used: `UpdateTime`, `Voltage`,
   `Amperage`, `CurrentCapacity`, `IsCharging`, `ExternalConnected`, `FullyCharged`,
-  `AvgTimeToEmpty`, `AvgTimeToFull` and, inside `BatteryData`, `BatteryPower`,
-  `RemainingCapacity`, `FullChargeCapacity`, `DesignCapacity`. From IOPowerSources only
-  the time-to-empty estimate is read. Serial numbers and manufacturer data are not read,
-  logged or shown.
+  `AvgTimeToEmpty`, `AvgTimeToFull`, inside `BatteryData` the keys `BatteryPower`,
+  `RemainingCapacity`, `FullChargeCapacity`, `DesignCapacity`, and inside
+  `AdapterDetails` only `Watts` (the rated power of the connected source). From
+  IOPowerSources only the time-to-empty estimate is read. Serial numbers and
+  manufacturer data are not read, logged or shown.
 - From processes only the pid, the name and the rusage counters are read.
 - Restwatt watches pointer movement system-wide only to notice when the pointer rests on
   its menu bar item. It looks at the pointer position alone, not at clicks, keys or the
@@ -172,11 +253,11 @@ background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the ass
 Package.swift                      SwiftPM manifest: tools 6.0, macOS 14, no dependencies
 VERSION                            the one place the version lives (Semantic Versioning)
 Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
-  BatterySnapshot.swift            data model, PowerState, reader protocols
-  PowerMath.swift                  draw, remaining Wh, minutes to empty
-  TimeToEmptyEstimator.swift       adaptive EWMA and confidence
+  BatterySnapshot.swift            data model, PowerState from the net flow, reader protocols
+  PowerMath.swift                  draw, remaining and missing Wh, dead band, minutes
+  EnergyFlowEstimator.swift        adaptive EWMA and confidence, draining and charging
   ProcessEnergyRanker.swift        per-process energy deltas, aggregation by name
-  BatteryMonitor.swift             one tick: read, dedupe, estimate, rank; Sampling.interval
+  BatteryMonitor.swift             one tick: read, settle, dedupe, estimate, rank; Sampling.interval
   Formatting.swift                 every user-visible string
   PointerRegionTracker.swift       pointer enter/leave transitions for the menu bar item
   DetailRow.swift                  label/value rows for the popover and the menu
@@ -205,9 +286,12 @@ swift test
 
 `RestwattCore` has no AppKit or IOKit import; hardware and process access sit behind the
 `BatteryReading`, `ProcessReading` and `ClockReading` protocols with test doubles, so the
-tests run on any Mac and on CI. The suite pins the menu bar strings, the detail rows of
-the popover and the menu (and that they carry the same figures as the plain text lines),
-the estimator behaviour (including a test that fails when the time constant is not adaptive),
+tests run on any Mac and on CI. The suite pins the menu bar strings and detail rows of
+every power state (and that the rows carry the same figures as the plain text lines),
+the state decision on the net flow including both edges of the dead band, the settling
+after a plug or unplug event, the estimator behaviour in both directions (including a
+test that fails when the time constant is not adaptive), the fixtures being one measured
+96 W charger reading plus clearly marked synthetic weak-source readings,
 the ranker's handling of pid reuse, the pointer enter/leave transitions behind the hover
 popover, and a few repository invariants: `VERSION` matches the
 latest CHANGELOG release, this README states the sampling interval, and no file contains

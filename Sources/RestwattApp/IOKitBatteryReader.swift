@@ -4,7 +4,8 @@ import IOKit.ps
 import RestwattCore
 
 /// Reads the AppleSmartBattery registry entry and the IOPowerSources time estimate.
-/// Only the keys listed here are read; nothing is logged.
+/// Only the keys listed here are read (including `AdapterDetails.Watts`, the external
+/// source's rating); nothing is logged.
 struct IOKitBatteryReader: BatteryReading {
     /// The gauge reports this value when a time is unknown.
     private static let unknownMinutes = 65535
@@ -22,6 +23,9 @@ struct IOKitBatteryReader: BatteryReading {
             throw BatteryReadError.noBattery
         }
         let batteryData = properties["BatteryData"] as? [String: Any] ?? [:]
+        // `AdapterDetails` exists without a source too, but then carries no `Watts` key.
+        // `PowerOutDetails` has a `Watts` key as well; that one is USB port telemetry, not it.
+        let adapterDetails = properties["AdapterDetails"] as? [String: Any] ?? [:]
 
         // Top-level CurrentCapacity is a percentage on Apple silicon Macs; the gauge key
         // semantics were only verified there. A value outside 0...100 is treated as
@@ -45,7 +49,8 @@ struct IOKitBatteryReader: BatteryReading {
             fullyCharged: properties["FullyCharged"] as? Bool ?? false,
             avgTimeToEmptyMinutes: Self.knownMinutes(properties["AvgTimeToEmpty"]),
             avgTimeToFullMinutes: Self.knownMinutes(properties["AvgTimeToFull"]),
-            systemTimeToEmptyMinutes: Self.systemTimeToEmptyMinutes()
+            systemTimeToEmptyMinutes: Self.systemTimeToEmptyMinutes(),
+            adapterWatts: adapterDetails["Watts"] as? Int
         )
     }
 

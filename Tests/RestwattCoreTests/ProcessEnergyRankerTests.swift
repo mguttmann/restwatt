@@ -21,10 +21,10 @@ final class ProcessEnergyRankerTests: XCTestCase {
         Fixtures.process(600, "newcomer", joules: 9, cpuSeconds: 2),  // no predecessor
     ]
 
-    private func rank(limit: Int = 5, isDischarging: Bool = true) -> ProcessEnergyReport {
+    private func rank(limit: Int = 5, batteryIsOnlySource: Bool = true) -> ProcessEnergyReport {
         ProcessEnergyRanker.rank(
             previous: previous, current: current, dt: 30, drawWatts: 7.138,
-            isDischarging: isDischarging, limit: limit)
+            batteryIsOnlySource: batteryIsOnlySource, limit: limit)
     }
 
     func testWattsFromEnergyDelta() {
@@ -58,21 +58,21 @@ final class ProcessEnergyRankerTests: XCTestCase {
         XCTAssertFalse(report.isWarmingUp)
     }
 
-    func testUnaccountedOnlyWhileDischarging() {
+    func testUnaccountedOnlyWhileTheBatteryIsTheOnlySource() {
         let discharging = rank()
         XCTAssertEqual(discharging.unaccountedWatts!, 7.138 - discharging.visibleTotalWatts, accuracy: 1e-9)
-        XCTAssertNil(rank(isDischarging: false).unaccountedWatts)
+        XCTAssertNil(rank(batteryIsOnlySource: false).unaccountedWatts)
     }
 
     func testUnaccountedNeverNegative() {
         let report = ProcessEnergyRanker.rank(
-            previous: previous, current: current, dt: 1, drawWatts: 0.5, isDischarging: true)
+            previous: previous, current: current, dt: 1, drawWatts: 0.5, batteryIsOnlySource: true)
         XCTAssertEqual(report.unaccountedWatts, 0)
     }
 
     func testFirstRoundIsWarmingUp() {
         let report = ProcessEnergyRanker.rank(
-            previous: [], current: current, dt: 0, drawWatts: 7.138, isDischarging: true)
+            previous: [], current: current, dt: 0, drawWatts: 7.138, batteryIsOnlySource: true)
         XCTAssertTrue(report.isWarmingUp)
         XCTAssertTrue(report.entries.isEmpty)
         XCTAssertNil(report.unaccountedWatts)
