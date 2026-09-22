@@ -94,9 +94,14 @@ public struct DailyEnergyEntry: Equatable, Sendable {
         self.wattHours = wattHours
     }
 
-    /// Finite, non-negative and within `DailyEnergyStatistic.maximumWattHours`.
+    /// Longest name kept; `proc_name` never returns more than this many bytes.
+    public static let maximumNameBytes = 255
+
+    /// A non-empty name of at most `maximumNameBytes`, and a finite, non-negative energy
+    /// within `DailyEnergyStatistic.maximumWattHours`.
     public var isPlausible: Bool {
-        (0...DailyEnergyStatistic.maximumWattHours).contains(wattHours)
+        !name.isEmpty && name.utf8.count <= Self.maximumNameBytes
+            && (0...DailyEnergyStatistic.maximumWattHours).contains(wattHours)
     }
 }
 
@@ -290,7 +295,35 @@ public enum StatisticsCodec {
         return (try? encoder.encode(document)) ?? Data()
     }
 
+    /// A hand-edited file may repeat a name or carry one no process can have. Duplicates are
+    /// summed as `record` would sum them; empty or overlong names and absurd figures are
+    /// dropped, before and after the summing.
+    private static func foldedEntries(_ entries: [EntryDocument]) -> [DailyEnergyEntry] {
+        var byName: [String: Double] = [:]
+        for entry in entries {
+            guard let name = entry.name else {
+                continue
+            }
+            let candidate = DailyEnergyEntry(name: name, wattHours: entry.wattHours ?? 0)
+            if candidate.isPlausible {
+                byName[name, default: 0] += candidate.wattHours
+            }
+        }
+        return byName.map { DailyEnergyEntry(name: $0.key, wattHours: $0.value) }.filter(\.isPlausible)
+    }
+
+    /// Read only the version first: a newer format may have changed the type of any other
+    /// key, so the full decode below may fail on it without hiding that the file is newer.
+    private struct VersionProbe: Decodable {
+        var version: Double?
+    }
+
     public static func decode(_ data: Data) -> StoredStatistics {
+        if let probe = try? JSONDecoder().decode(VersionProbe.self, from: data),
+           let version = probe.version, version.isFinite,
+           version > Double(StoredStatistics.currentVersion) {
+            return StoredStatistics(version: Int(min(version.rounded(.up), 1_000_000)))
+        }
         guard let document = try? JSONDecoder().decode(Document.self, from: data) else {
             return StoredStatistics()
         }
@@ -313,9 +346,7 @@ public enum StatisticsCodec {
         if let day = document.today?.day {
             var candidate = DailyEnergyStatistic(
                 day: day,
-                entries: (document.today?.entries ?? []).compactMap { entry in
-                    entry.name.map { DailyEnergyEntry(name: $0, wattHours: entry.wattHours ?? 0) }
-                }.filter(\.isPlausible),
+                entries: Self.foldedEntries(document.today?.entries ?? []),
                 otherWattHours: document.today?.otherWattHours ?? 0,
                 sampledSeconds: document.today?.sampledSeconds ?? 0)
             if candidate.isPlausible {

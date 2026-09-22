@@ -337,7 +337,8 @@ test:
   discarded when the file is loaded, whichever state is shown: the workload after a
   reboot is a new one, and the first write of the new session no longer carries the
   entries of the old boot (a unit test loads two remembered states across a simulated
-  reboot and finds neither in the rewritten file). When the boot time is unknown on
+  reboot and finds neither of the old entries in the rewritten file; the resumed state
+  reappears only as a fresh entry of the new session). When the boot time is unknown on
   either side, the gap alone decides.
 - **Gap.** The pause between the last remembered tick and now (wall clock) is subtracted
   from the remembered observation window, second for second, starting from at most one
@@ -503,7 +504,8 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
   interval, which the second sample 5 seconds after launch delivers, or a file that
   loading already changed, as after a reboot), at most once per tick and at quit,
   atomically (see "Footprint"). On AC inside the dead band
-  there is no estimate, so the launch tick alone does not create the file. It is a statistic, not a log: it never grows with time. It contains,
+  there is no estimate, so the launch tick alone does not create the file. It is a
+  statistic, not a log: it never grows with time. It contains,
   as plain JSON with sorted keys, exactly this: for each of the three flow states the
   smoothed power in watts, the observation window and sample count, and the wall-clock
   time (unix seconds) of the last tick in that state; for the current local calendar day

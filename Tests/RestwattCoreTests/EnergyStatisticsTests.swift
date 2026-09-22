@@ -362,6 +362,29 @@ final class EnergyStatisticsTests: XCTestCase {
         XCTAssertEqual(store.stored?.version, 2)
     }
 
+    func testANewerFormatIsRecognisedEvenWhenItChangedAType() {
+        for json in ["{\"version\":2,\"estimators\":[1]}", "{\"version\":2.0,\"today\":\"gone\"}", "{\"version\":3.5}"] {
+            let decoded = StatisticsCodec.decode(Data(json.utf8))
+            XCTAssertTrue(decoded.isNewerFormat, json)
+            XCTAssertEqual(decoded.estimators, [:], json)
+            XCTAssertNil(decoded.today, json)
+        }
+        XCTAssertEqual(StatisticsCodec.decode(Data("{\"version\":\"2\"}".utf8)), StoredStatistics(),
+                       "a version that is not a number is no format this app knows; start from zero")
+    }
+
+    func testDuplicateAndOverlongNamesAreFoldedOrDroppedAtDecode() {
+        let long = String(repeating: "x", count: 300)
+        let json = """
+        {"today":{"day":"2026-09-22","sampledSeconds":60,"entries":[{"name":"Safari","wattHours":1.0},\
+        {"name":"Safari","wattHours":2.0},{"name":"","wattHours":5.0},{"name":"\(long)","wattHours":5.0}]}}
+        """
+        let day = StatisticsCodec.decode(Data(json.utf8)).today!
+        XCTAssertEqual(day.entries, [DailyEnergyEntry(name: "Safari", wattHours: 3.0)],
+                       "duplicates are summed as record sums them; empty and overlong names are dropped")
+        XCTAssertEqual(day.otherWattHours, 0)
+    }
+
     func testUnreadableDataMeansAStartFromZero() {
         for garbage in ["not json", "", "[1,2]", "{\"estimators\":[1]}", "{\"today\":\"yesterday\"}"] {
             XCTAssertEqual(StatisticsCodec.decode(Data(garbage.utf8)), StoredStatistics(), garbage)
