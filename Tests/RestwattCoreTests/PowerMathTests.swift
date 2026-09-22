@@ -38,6 +38,9 @@ final class PowerMathTests: XCTestCase {
         XCTAssertEqual(PowerMath.minutes(energyWattHours: 62.975, watts: 7.138)!, 529, accuracy: 1)
         XCTAssertNil(PowerMath.minutes(energyWattHours: 62.975, watts: 0.05))
         XCTAssertNil(PowerMath.minutes(energyWattHours: 62.975, watts: -3))
+        // No energy left to move: no figure, never "0:00" (full-charge capacity drifts).
+        XCTAssertNil(PowerMath.minutes(energyWattHours: 0, watts: 49.055))
+        XCTAssertNil(PowerMath.minutes(energyWattHours: -0.5, watts: 7.138))
         XCTAssertEqual(PowerMath.minutes(energyWattHours: 62.975, watts: 0.1), PowerMath.maximumMinutes)
         XCTAssertEqual(PowerMath.minutes(energyWattHours: 18.176, watts: 49.055), 22)
     }

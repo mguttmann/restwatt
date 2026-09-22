@@ -56,7 +56,9 @@ The version lives in the `VERSION` file.
   gauge `UpdateTime`; immediate re-sample on power source changes. A reading whose
   `ExternalConnected` flag flipped while its `UpdateTime` stayed the same predates the
   change and is shown as the charge level only until the gauge moves on, so a fresh
-  charger is never shown as a weak source and unplugging never shows a negative draw. A
+  charger is not shown as a weak source and unplugging does not show a negative draw
+  when the flip arrives before the gauge's next reading (a flip that arrives together
+  with a new reading is trusted as is). A
   charge percentage outside 0 to 100 is treated as unreadable, because the gauge key
   semantics were only verified on Apple silicon.
 - One 30-second sampling timer; no network, no files written.

@@ -46,9 +46,11 @@ public enum PowerMath {
     }
 
     /// Minutes until `energyWattHours` is moved at a constant power (to empty while draining,
-    /// to full while charging), or nil if the power is too small to say.
+    /// to full while charging), or nil if the power is too small to say or there is no energy
+    /// left to move (a gap of zero while the gauge still reports a flow is a gauge artefact,
+    /// not a "0:00" worth showing).
     public static func minutes(energyWattHours: Double, watts: Double) -> Int? {
-        guard watts >= minimumDrawWatts, energyWattHours >= 0 else {
+        guard watts >= minimumDrawWatts, energyWattHours > 0 else {
             return nil
         }
         let minutes = energyWattHours / watts * 60.0
