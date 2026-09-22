@@ -264,9 +264,16 @@ final class ScriptedCommandRunner: CommandRunning {
     var sudoDeniesAfter: Int?
     private var sudoGranted = 0
     var administratorDialogAccepted = true
+    /// When set, `sudo -n` fails on its own account with this stderr and exit 1 before pmset
+    /// runs (a broken sudo configuration, a `nosuid` mount): neither a grant nor a plain denial.
+    var sudoFailureStderr: String?
+    /// With `sudoFailureStderr`: how many vectors sudo grants before it breaks (nil: none).
+    var sudoFailsAfter: Int?
     /// pmset keys the simulated hardware refuses: the call exits 1 with pmset's own stderr,
     /// through sudo and inside the dialog alike.
     var pmsetRefusedKeys: Set<String> = []
+    /// True makes a refused pmset call exit 1 without printing anything.
+    var pmsetRefusesSilently = false
     /// Nil makes `pmset -g` fail.
     var sleepDisabled: Bool? = false
     var pmsetPrintsLineWhenZero = true
@@ -289,6 +296,9 @@ final class ScriptedCommandRunner: CommandRunning {
             }
             if !sudoPasswordless || sudoDeniesAfter.map({ sudoGranted >= $0 }) == true {
                 return CommandResult(exitStatus: 1, stderr: "sudo: a password is required\n")
+            }
+            if let stderr = sudoFailureStderr, sudoFailsAfter.map({ sudoGranted >= $0 }) ?? true {
+                return CommandResult(exitStatus: 1, stderr: stderr)
             }
             sudoGranted += 1
             return applyPmset(CommandVector(args[1], Array(args[2...])))
@@ -341,7 +351,8 @@ final class ScriptedCommandRunner: CommandRunning {
     private func applyPmset(_ vector: CommandVector) -> CommandResult {
         let args = vector.arguments
         if let refused = args.first(where: pmsetRefusedKeys.contains) {
-            return CommandResult(exitStatus: 1, stderr: "pmset: \(refused) is not supported on this system\n")
+            return CommandResult(exitStatus: 1,
+                                 stderr: pmsetRefusesSilently ? "" : "pmset: \(refused) is not supported on this system\n")
         }
         privilegedPmsetVectors.append(vector)
         if let index = args.firstIndex(of: "disablesleep"), index + 1 < args.count {

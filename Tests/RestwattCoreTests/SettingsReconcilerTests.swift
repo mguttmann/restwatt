@@ -9,9 +9,10 @@ final class SettingsReconcilerTests: XCTestCase {
     /// A snapshot as the menu renders it: `sleepDisabled` decides the lid toggle, `awake`
     /// and `sync` the other two kinds.
     private func snapshot(sleepDisabled: Observation<Bool> = .known(false), armed: Bool = false,
-                          awake: [AwakeAssertion: Bool] = [:],
+                          awake: [AwakeAssertion: Bool] = [:], remembered: [AwakeAssertion: Bool] = [:],
                           sync: [SyncService: ServiceState] = [:]) -> SettingsSnapshot {
-        SettingsSnapshot(awake: awake, sleepDisabled: sleepDisabled, armedByRestwatt: armed, sync: sync)
+        SettingsSnapshot(awake: awake, sleepDisabled: sleepDisabled, armedByRestwatt: armed,
+                         rememberedAwake: remembered, sync: sync)
     }
 
     // MARK: Launch
@@ -111,6 +112,20 @@ final class SettingsReconcilerTests: XCTestCase {
     func testAwakeToggleAcquiresOrReleases() {
         XCTAssertEqual(SettingsReconciler.toggleActions(key: .awake(.idleSleep), snapshot: snapshot()), [.acquire(.idleSleep)])
         XCTAssertEqual(SettingsReconciler.toggleActions(key: .awake(.idleSleep), snapshot: snapshot(awake: [.idleSleep: true])), [.release(.idleSleep)])
+    }
+
+    /// Ticket 7 (c): an assertion that is remembered but not held (IOKit refused it) shows
+    /// off; the click on it clears the choice instead of trying again.
+    func testAwakeToggleOnARememberedButRefusedAssertionReleases() {
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .awake(.idleSleep),
+                                                        snapshot: snapshot(awake: [.idleSleep: false], remembered: [.idleSleep: true])),
+                       [.release(.idleSleep)])
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .awake(.idleSleep),
+                                                        snapshot: snapshot(remembered: [.idleSleep: false])),
+                       [.acquire(.idleSleep)])
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .awake(.displaySleep),
+                                                        snapshot: snapshot(remembered: [.idleSleep: true])),
+                       [.acquire(.displaySleep)], "another assertion's choice does not count")
     }
 
     func testLidClosedToggleWritesTheProfileWithTheArmedFlag() {

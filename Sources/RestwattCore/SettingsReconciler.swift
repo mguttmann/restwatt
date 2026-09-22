@@ -87,7 +87,11 @@ public enum SettingsReconciler {
         let currentlyOn = snapshot.isOn(key)
         switch key {
         case .awake(let assertion):
-            return [currentlyOn ? .release(assertion) : .acquire(assertion)]
+            // A remembered choice the system refuses shows off with the reason; the click on
+            // it clears the choice instead of trying again, so the file can be cleaned from
+            // the menu. The next launch still retries a choice that is kept.
+            let remembered = snapshot.rememberedAwake[assertion] ?? false
+            return [currentlyOn || remembered ? .release(assertion) : .acquire(assertion)]
         case .lidClosedAwake:
             switch snapshot.sleepDisabled {
             case .known(true):

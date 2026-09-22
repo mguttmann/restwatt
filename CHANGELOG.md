@@ -72,12 +72,17 @@ The version lives in the `VERSION` file.
   awake profile (`disablesleep 1`) as administrator and, when turned off, a fixed saver
   profile; it tries the non-interactive `sudo -n` first, call by call, and tells sudo
   refusing to run without a password (exit status 1 with sudo's `a password is required`
-  or `a terminal is required` on stderr) apart from `pmset` itself failing as root. Only
-  the denial opens the native administrator dialog, one per profile and only for the calls
-  sudo did not get to run; a `pmset` failure stops the profile at that call, opens no
-  dialog, re-runs nothing and shows the failing command line, exit status and message
-  under the toggle. It runs nothing but `pmset` with constant arguments as root, and never
-  creates, edits or recommends a password-free sudo rule.
+  or `a terminal is required` on stderr) apart from `pmset` itself failing as root. A
+  sudo-side failure (exit status 1 with a line sudo prefixed `sudo:` on stderr, the denial
+  included) opens the native administrator dialog, one per profile and only for the calls
+  sudo did not get to run; when that dialog is declined the toggle names the `sudo -n`
+  command line that actually ran, its message and the dialog's answer. A `pmset` failure
+  (its own `pmset:` message, an empty stderr or any other exit status) stops the profile at
+  that call, opens no dialog, re-runs nothing and shows the failing command line, exit
+  status and message under the toggle; a command that fails without a message is shown as
+  `<command> exit <status>` once, with nothing repeated. It runs nothing but `pmset` with
+  constant arguments as root, and never creates, edits or recommends a password-free sudo
+  rule.
   `iCloud Drive` and `iCloud Photos` are switched with `launchctl bootstrap`, `kickstart`
   and `bootout` in the `gui/<uid>` domain, `OneDrive` is launched hidden through
   LaunchServices (its primary bundle identifier first, with the reason for that one shown
@@ -94,13 +99,20 @@ The version lives in the `VERSION` file.
   `SleepDisabled 1` (the gap a crash, `kill` or Force Quit leaves, since those skip the
   quit step). A record that is on while `pmset -g` shows `SleepDisabled 0` (the write never
   landed, or somebody else reset it) is dropped quietly, at launch and after a click; a
-  record that is on while `pmset -g` cannot be read stays for the quit reconcile. Every
-  settings action runs on its own: a failure records its reason on its toggle and never
-  skips the rest, so the launch reset cannot be starved by a refused power assertion, and
+  record that is on while `pmset -g` cannot be read stays for the quit reconcile. The
+  record written ahead of a click also follows the outcome of that write, not only the
+  later reading: when no call of the awake profile ran as root (dialog cancelled, sudo
+  denied and the dialog declined, or the first call refused), the record is dropped at
+  once, whether or not `pmset -g` can be read afterwards, so quitting Restwatt writes
+  nothing then; when at least one call landed, the record stays and quit or the next
+  launch writes the saver profile. Every settings action runs on its own: a failure records
+  its reason on its toggle and never skips the rest, so the launch reset cannot be starved by a refused power assertion, and
   a remembered assertion the system refuses at launch keeps its stored choice, shows off
-  with the reason and is tried again at the next launch. When `pmset -g` cannot be read,
-  turning the lid-closed toggle on is refused with `not written, could not read pmset` and
-  the reason; turning it off while Restwatt's record says on still writes the saver
+  with the reason and is tried again at the next launch; clicking that refused item clears
+  the stored choice instead of retrying, so the settings file can be cleaned from the menu,
+  and the next click turns it on again. When `pmset -g` cannot be read, turning the
+  lid-closed toggle on is refused with `not written while SleepDisabled could not be read`,
+  the reason shown once under the item; turning it off while Restwatt's record says on still writes the saver
   profile. A `SleepDisabled 1` set outside Restwatt is left alone and shown as
   `set outside Restwatt`. Sync is not touched at launch or quit, so sync turned off stays
   off until it is turned on again.

@@ -87,6 +87,18 @@ final class SettingsRowTests: XCTestCase {
         XCTAssertEqual(rows[6], "    could not read pmset: pmset -g exit 1: pmset: could not read settings")
     }
 
+    /// Ticket 7 (b): a click refused because pmset is unreadable shows the reason once, in
+    /// the note; the warning says only that nothing was written.
+    func testRefusedClickWhilePmsetIsUnreadableShowsTheReasonOnce() {
+        var snapshot = allOff
+        snapshot.sleepDisabled = .unknown("pmset -g exit 1: pmset: could not read settings")
+        snapshot.lastError[.lidClosedAwake] = "not written while SleepDisabled could not be read"
+        let rows = labels(snapshot)
+        XCTAssertEqual(rows[6], "    could not read pmset: pmset -g exit 1: pmset: could not read settings")
+        XCTAssertEqual(rows[7], "  ! could not change: not written while SleepDisabled could not be read")
+        XCTAssertEqual(rows.filter { $0.contains("could not read settings") }.count, 1)
+    }
+
     func testWarningsSitUnderTheirOwnToggle() {
         var snapshot = allOff
         snapshot.lastError[.awake(.diskIdle)] = "IOPMAssertionCreateWithName returned e00002bc"

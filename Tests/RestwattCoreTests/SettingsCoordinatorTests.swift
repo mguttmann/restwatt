@@ -676,8 +676,11 @@ final class SettingsCoordinatorTests: XCTestCase {
         XCTAssertEqual(pmsetWriteCalls, [])
         XCTAssertFalse(coordinator.snapshot.armedByRestwatt)
         XCTAssertEqual(coordinator.snapshot.lastError[.lidClosedAwake],
-                       "not written, could not read pmset: pmset -g exit 1: pmset: could not read settings")
+                       "not written while SleepDisabled could not be read")
         XCTAssertEqual(store.saveCount, 0)
+        // Ticket 7 (b): the reason is shown once, in the note; the warning does not repeat it.
+        let rows = Formatting.settingsRows(coordinator.snapshot).map(\.label)
+        XCTAssertEqual(rows.filter { $0.contains("pmset: could not read settings") }.count, 1)
     }
 
     /// Off stays possible while unreadable: Restwatt armed it, so the click takes it back.
@@ -696,5 +699,290 @@ final class SettingsCoordinatorTests: XCTestCase {
         XCTAssertEqual(runner.privilegedPmsetVectors, SystemCommands.pmsetSaverProfile)
         XCTAssertFalse(coordinator.snapshot.armedByRestwatt)
         XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, false)
+    }
+
+    // MARK: Lid closed, the record follows the outcome of the write (ticket 7)
+
+    /// The headline case: the write-ahead record is saved, the dialog is cancelled, and right
+    /// after that `pmset -g` cannot be read. Nothing reached pmset, so the record is disarmed
+    /// at once, and quit writes nothing: no unowed root write, no password dialog at quit.
+    func testArmClickWithCancelledDialogAndUnreadablePmsetDisarmsAndQuitWritesNothing() {
+        runner.sudoPasswordless = false
+        runner.administratorDialogAccepted = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        XCTAssertEqual(coordinator.snapshot.sleepDisabled, .known(false), "the menu showed off")
+        runner.sleepDisabled = nil
+        var armedAtSave: [Bool] = []
+        store.onSave = { armedAtSave.append($0.lidClosedAwakeArmedByRestwatt) }
+
+        coordinator.toggle(.lidClosedAwake)
+
+        XCTAssertEqual(pmsetWriteCalls.count, 2, "one sudo attempt, one dialog")
+        XCTAssertEqual(runner.privilegedPmsetVectors, [], "nothing landed")
+        XCTAssertEqual(coordinator.snapshot.sleepDisabled, .unknown("pmset -g exit 1: pmset: could not read settings"))
+        XCTAssertFalse(coordinator.snapshot.armedByRestwatt)
+        XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, false)
+        XCTAssertEqual(armedAtSave, [true, false], "write-ahead record, then disarmed on the outcome, not on an observation")
+        XCTAssertEqual(coordinator.snapshot.lastError[.lidClosedAwake], "execution error: User canceled. (-128)")
+
+        runner.calls.removeAll()
+        coordinator.willTerminate()
+        XCTAssertEqual(runner.calls, [], "not armed: not even a read, no root write at quit")
+    }
+
+    /// Same with a passwordless Mac whose pmset refuses the one awake vector while `pmset -g`
+    /// is unreadable afterwards: the outcome says nothing landed, the record goes.
+    func testArmClickWithRefusedVectorAndUnreadablePmsetDisarms() {
+        runner.pmsetRefusedKeys = ["disablesleep"]
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.sleepDisabled = nil
+
+        coordinator.toggle(.lidClosedAwake)
+
+        XCTAssertEqual(runner.privilegedPmsetVectors, [])
+        XCTAssertFalse(coordinator.snapshot.armedByRestwatt)
+        XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, false)
+        runner.calls.removeAll()
+        coordinator.willTerminate()
+        XCTAssertEqual(runner.calls, [])
+    }
+
+    /// Tester hardening (ticket 7): the dialog RUNS and fails, it is not cancelled. pmset
+    /// refuses the one awake vector inside the dialog, so the chain has no call before the
+    /// failing one: nothing is unaccounted, nothing landed, the record goes although
+    /// `pmset -g` is unreadable, and quit writes nothing.
+    func testArmClickWithFailedDialogAndUnreadablePmsetDisarmsAndQuitWritesNothing() {
+        runner.sudoPasswordless = false
+        runner.pmsetRefusedKeys = ["disablesleep"]
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.sleepDisabled = nil
+        var armedAtSave: [Bool] = []
+        store.onSave = { armedAtSave.append($0.lidClosedAwakeArmedByRestwatt) }
+
+        coordinator.toggle(.lidClosedAwake)
+
+        XCTAssertEqual(pmsetWriteCalls.count, 2, "one sudo attempt, one dialog that ran")
+        XCTAssertEqual(runner.privilegedPmsetVectors, [], "nothing landed")
+        XCTAssertEqual(coordinator.snapshot.lastError[.lidClosedAwake],
+                       "execution error: pmset: disablesleep is not supported on this system (1)")
+        XCTAssertFalse(coordinator.snapshot.armedByRestwatt)
+        XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, false)
+        XCTAssertEqual(armedAtSave, [true, false])
+
+        runner.calls.removeAll()
+        coordinator.willTerminate()
+        XCTAssertEqual(runner.calls, [], "no root write at quit")
+    }
+
+    /// The other half of the rule: a partial profile (something landed) keeps the record, so
+    /// quit writes the saver profile. The awake profile has one vector, so the partial
+    /// outcome is fed in directly; the runner tests below show it produces one.
+    func testAPartialOutcomeKeepsTheWriteAheadRecordAndAnEmptyOneDropsIt() {
+        let awake = SystemCommands.pmsetAwakeProfile[0]
+        XCTAssertFalse(SettingsCoordinator.keepsWriteAheadRecord(
+            PrivilegedWrite(error: .declinedOrFailed("execution error: User canceled. (-128)"))))
+        XCTAssertFalse(SettingsCoordinator.keepsWriteAheadRecord(
+            PrivilegedWrite(error: .commandFailed(awake, exitStatus: 1, message: ""))))
+        XCTAssertTrue(SettingsCoordinator.keepsWriteAheadRecord(
+            PrivilegedWrite(applied: [awake], error: .commandFailed(awake, exitStatus: 1, message: ""))))
+        XCTAssertTrue(SettingsCoordinator.keepsWriteAheadRecord(
+            PrivilegedWrite(unaccounted: [awake], error: .declinedOrFailed("execution error: pmset: x (1)"))),
+            "a dialog that ran and failed may have applied something: stay armed, the safe direction")
+    }
+
+    /// Off direction with the outcome rule: a saver write whose first vector is refused lands
+    /// nothing, so the record stays armed and quit writes the saver profile. (When the first
+    /// vector, `disablesleep 0`, does land, the settle rule drops the record against the
+    /// observed 0 as before: the one thing Restwatt owes is taken back.)
+    func testFailedSaverWriteStaysArmedAndQuitWritesTheSaverProfile() {
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        coordinator.toggle(.lidClosedAwake)
+        XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, true)
+        runner.pmsetRefusedKeys = ["disablesleep"]
+        runner.privilegedPmsetVectors.removeAll()
+
+        coordinator.toggle(.lidClosedAwake)
+
+        XCTAssertEqual(runner.privilegedPmsetVectors, [], "nothing landed")
+        XCTAssertEqual(coordinator.snapshot.sleepDisabled, .known(true))
+        XCTAssertTrue(coordinator.snapshot.armedByRestwatt, "still owes the reset")
+        XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, true)
+
+        runner.pmsetRefusedKeys = []
+        runner.privilegedPmsetVectors.removeAll()
+        coordinator.willTerminate()
+        XCTAssertEqual(runner.privilegedPmsetVectors, SystemCommands.pmsetSaverProfile)
+        XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, false)
+    }
+
+    // MARK: Privileged runner outcomes (ticket 7)
+
+    func testRunnerReportsTheAppliedVectorsOfAPartialProfile() {
+        runner.pmsetRefusedKeys = ["hibernatemode"]
+        let saver = SystemCommands.pmsetSaverProfile
+        let outcome = PrivilegedRunner(commands: runner).write(.saver)
+        XCTAssertEqual(outcome.applied, [saver[0]])
+        XCTAssertEqual(outcome.unaccounted, [])
+        XCTAssertFalse(outcome.nothingApplied)
+        XCTAssertEqual(outcome.error, .commandFailed(saver[1], exitStatus: 1,
+                                                     message: "pmset: hibernatemode is not supported on this system"))
+    }
+
+    func testRunnerReportsNothingAppliedForACancelledDialog() {
+        runner.sudoPasswordless = false
+        runner.administratorDialogAccepted = false
+        let outcome = PrivilegedRunner(commands: runner).write(.awake)
+        XCTAssertTrue(outcome.nothingApplied)
+        XCTAssertEqual(outcome.error, .declinedOrFailed("execution error: User canceled. (-128)"))
+    }
+
+    /// A dialog that ran the saver chain and failed at the second call: the first call
+    /// applied, but osascript does not say so; the calls before the last are unaccounted.
+    func testRunnerMarksTheChainOfAFailedDialogAsUnaccounted() {
+        runner.sudoPasswordless = false
+        runner.pmsetRefusedKeys = ["hibernatemode"]
+        let saver = SystemCommands.pmsetSaverProfile
+        let outcome = PrivilegedRunner(commands: runner).write(.saver)
+        XCTAssertEqual(outcome.applied, [])
+        XCTAssertEqual(outcome.unaccounted, Array(saver.dropLast()))
+        XCTAssertFalse(outcome.nothingApplied)
+        XCTAssertEqual(outcome.error, .declinedOrFailed(
+            "execution error: pmset: hibernatemode is not supported on this system (1)"))
+    }
+
+    func testRunnerReportsAllVectorsAppliedAfterAGrantedDialog() {
+        runner.sudoDeniesAfter = 2
+        let outcome = PrivilegedRunner(commands: runner).write(.saver)
+        XCTAssertNil(outcome.error)
+        XCTAssertEqual(outcome.applied, SystemCommands.pmsetSaverProfile)
+    }
+
+    // MARK: sudo failing on its own account (ticket 7, minor a)
+
+    private let sudoOwnFailure = "sudo: effective uid is not 0, is /usr/bin/sudo on a file system with the "
+        + "'nosuid' option set or an NFS file system without root privileges?\n"
+
+    /// sudo fails without the denial markers: the dialog does not depend on sudo, so it is
+    /// offered for the vectors not yet applied; accepted, the profile lands and arms.
+    func testSudoOwnFailureOffersTheDialogWhichSucceeds() throws {
+        runner.sudoFailureStderr = sudoOwnFailure
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.lidClosedAwake)
+
+        XCTAssertEqual(pmsetWriteCalls, [
+            SystemCommands.sudoNonInteractive(SystemCommands.pmsetAwakeProfile[0]),
+            try SystemCommands.administratorScript(SystemCommands.pmsetAwakeProfile),
+        ])
+        XCTAssertEqual(runner.privilegedPmsetVectors, SystemCommands.pmsetAwakeProfile)
+        XCTAssertTrue(coordinator.snapshot.isOn(.lidClosedAwake))
+        XCTAssertTrue(coordinator.snapshot.armedByRestwatt)
+        XCTAssertNil(coordinator.snapshot.lastError[.lidClosedAwake])
+    }
+
+    /// Declined, the row names the sudo line that actually ran, sudo's own message and the
+    /// dialog's outcome; nothing landed, so the record is disarmed.
+    func testSudoOwnFailureWithDeclinedDialogNamesTheSudoLine() {
+        runner.sudoFailureStderr = sudoOwnFailure
+        runner.administratorDialogAccepted = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.lidClosedAwake)
+
+        XCTAssertEqual(runner.privilegedPmsetVectors, [])
+        XCTAssertFalse(coordinator.snapshot.armedByRestwatt)
+        XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, false)
+        XCTAssertEqual(coordinator.snapshot.lastError[.lidClosedAwake],
+                       "/usr/bin/sudo -n \(SystemCommands.pmsetAwakeProfile[0].commandLine) exit 1: "
+                       + "\(SystemStateParser.head(sudoOwnFailure)), then execution error: User canceled. (-128)")
+        XCTAssertTrue(SystemStateParser.head(sudoOwnFailure).hasPrefix("sudo: effective uid is not 0"))
+    }
+
+    /// Mid-profile: the applied vectors are not run again, the dialog carries the rest only,
+    /// every vector runs exactly once, in script order.
+    func testSudoOwnFailureMidProfileOpensOneDialogWithTheRemainingVectorsOnly() throws {
+        runner.sleepDisabled = true
+        runner.sudoFailureStderr = sudoOwnFailure
+        runner.sudoFailsAfter = 2
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.lidClosedAwake)
+
+        let saver = SystemCommands.pmsetSaverProfile
+        XCTAssertEqual(pmsetWriteCalls, [
+            SystemCommands.sudoNonInteractive(saver[0]),
+            SystemCommands.sudoNonInteractive(saver[1]),
+            SystemCommands.sudoNonInteractive(saver[2]),
+            try SystemCommands.administratorScript(Array(saver[2...])),
+        ])
+        XCTAssertEqual(runner.privilegedPmsetVectors, saver, "each vector once, in order")
+        XCTAssertNil(coordinator.snapshot.lastError[.lidClosedAwake])
+        XCTAssertEqual(coordinator.snapshot.sleepDisabled, .known(false))
+    }
+
+    /// The conservative reading: a failure under `sudo -n` without a `sudo:` line is pmset's
+    /// own, whatever it says, and opens no dialog.
+    func testAFailureWithoutASudoLineStillOpensNoDialog() {
+        runner.pmsetRefusedKeys = ["disablesleep"]
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.lidClosedAwake)
+
+        XCTAssertEqual(pmsetWriteCalls, SystemCommands.pmsetAwakeProfile.map(SystemCommands.sudoNonInteractive), "no osascript")
+        XCTAssertFalse(coordinator.snapshot.armedByRestwatt)
+    }
+
+    // MARK: Text shown once (ticket 7, minor b)
+
+    /// A refused pmset call that prints nothing renders as `<command line> exit 1`, no
+    /// dangling colon, no repeated exit status.
+    func testSilentCommandFailureRendersTheExitStatusOnce() {
+        runner.sleepDisabled = true
+        runner.pmsetRefusedKeys = ["disablesleep"]
+        runner.pmsetRefusesSilently = true
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.lidClosedAwake)
+
+        XCTAssertEqual(coordinator.snapshot.lastError[.lidClosedAwake],
+                       "\(SystemCommands.pmsetSaverProfile[0].commandLine) exit 1")
+    }
+
+    // MARK: A remembered assertion the system refuses (ticket 7, minor c)
+
+    /// The row shows off with the reason; the click on it clears the stored choice instead
+    /// of trying IOKit again, so the file can be cleaned from the menu.
+    func testClickOnARefusedRememberedAssertionClearsTheChoice() {
+        assertions.failing = [.idleSleep]
+        store.stored = StoredSettings(awake: [.idleSleep: true])
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        XCTAssertFalse(coordinator.snapshot.isOn(.awake(.idleSleep)))
+        XCTAssertEqual(coordinator.snapshot.lastError[.awake(.idleSleep)], "IOPMAssertionCreateWithName returned e00002bc")
+        XCTAssertEqual(assertions.acquireCalls.count, 1, "the launch retry")
+
+        coordinator.toggle(.awake(.idleSleep))
+
+        XCTAssertEqual(assertions.acquireCalls.count, 1, "no second attempt")
+        XCTAssertEqual(assertions.releaseCalls, [], "there was no token to release")
+        XCTAssertFalse(coordinator.snapshot.isOn(.awake(.idleSleep)))
+        XCTAssertNil(coordinator.snapshot.lastError[.awake(.idleSleep)], "the failed attempt is history")
+        XCTAssertEqual(store.stored, StoredSettings(awake: [.idleSleep: false]))
+        XCTAssertEqual(store.saveCount, 1)
+
+        // From here the click means on again, and IOKit cooperating turns it on.
+        assertions.failing = []
+        coordinator.toggle(.awake(.idleSleep))
+        XCTAssertTrue(coordinator.snapshot.isOn(.awake(.idleSleep)))
+        XCTAssertEqual(store.stored, StoredSettings(awake: [.idleSleep: true]))
     }
 }

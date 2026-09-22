@@ -163,12 +163,16 @@ otherwise. Restwatt tells the two ways a call can fail apart: sudo refusing to r
 without a password (`sudo -n` exits with status 1 and reports `a password is required` or
 `a terminal is required` on its own stderr) is a denial; any other failure is `pmset`
 itself, which ran as root and refused its arguments, for example a key this hardware does
-not support. Only a denial opens the native macOS administrator dialog (`osascript`,
-`do shell script ... with administrator privileges`), once per profile and only for the
-calls sudo did not get to run, chained into that single dialog; the calls that already
-succeeded are not run again. A `pmset` failure stops the profile at that call, opens no
-dialog, re-runs nothing, and puts the failing command line, its exit status and its own
-message under the toggle; the calls before it stay applied. Nothing but `pmset` with these
+not support. A denial, and any other failure sudo reports on its own account (exit
+status 1 with a line prefixed `sudo:` on stderr), opens the native macOS administrator
+dialog (`osascript`, `do shell script ... with administrator privileges`), once per
+profile and only for the calls sudo did not get to run, chained into that single dialog;
+the calls that already succeeded are not run again, and when the dialog is declined the
+toggle names the `sudo -n` command line that actually ran together with the dialog's
+answer. A `pmset` failure (its own `pmset:` message, an empty stderr or any other exit
+status) stops the profile at that call, opens no dialog, re-runs nothing, and puts the
+failing command line, its exit status and its own message under the toggle; the calls
+before it stay applied. Nothing but `pmset` with these
 fixed arguments ever runs with administrator rights, no command line is built from user
 data, and Restwatt never creates, edits or recommends a rule that lets sudo skip the
 password. Cancelling the dialog, or any other failure, leaves the checkmark off, as
@@ -196,10 +200,14 @@ Two safety facts, stated plainly:
    dropped quietly with no write; no record and `SleepDisabled 1` is somebody else's
    setting and is left alone; no record and `SleepDisabled 0` is nothing to do. The same
    quiet drop happens after a click whose write did not land, so a cancelled dialog does
-   not leave a stale record behind. That launch write does not depend on anything else
-   Restwatt does at launch; a power assertion the system refuses to re-acquire does not
-   skip it. When the record is on but `pmset -g` cannot be read, the record stays and the
-   quit reconcile tries again.
+   not leave a stale record behind: the record a click wrote ahead follows the outcome of
+   that write, and when no call of the awake profile ran as root it is dropped at once,
+   even when `pmset -g` cannot be read right after, so Restwatt owes no reset and writes
+   nothing at quit. Only when at least one call landed does the record stay, and quit or
+   the next launch takes the setting back. That launch write does not depend on anything
+   else Restwatt does at launch; a power assertion the system refuses to re-acquire does
+   not skip it. When a record from an earlier run is on but `pmset -g` cannot be read, the
+   record stays and the quit reconcile tries again.
    Restwatt only ever takes back what it set itself. A `SleepDisabled 1` that another
    tool or script set is left alone and shown as on with the note `set outside
    Restwatt`; turning that toggle off by hand writes the saver profile all the same. The

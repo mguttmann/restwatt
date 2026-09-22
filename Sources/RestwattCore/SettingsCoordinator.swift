@@ -40,11 +40,30 @@ public protocol ApplicationControlling {
     func requestQuit(bundleIdentifier: String) throws
 }
 
+/// What a privileged write left behind: the vectors that ran as root, and why the profile
+/// did not finish when it did not. The coordinator decides the armed record on this, not
+/// on a later observation that may be unreadable.
+public struct PrivilegedWrite: Equatable, Sendable {
+    /// Vectors that ran as root and succeeded, in order.
+    public var applied: [CommandVector] = []
+    /// Vectors a failed administrator dialog may have applied: the chain stops at its first
+    /// failing call and osascript does not say which one it was. Empty when the dialog was
+    /// cancelled (nothing ran) or never opened.
+    public var unaccounted: [CommandVector] = []
+    public var error: PrivilegeError?
+
+    /// True when no vector can have reached pmset as root.
+    public var nothingApplied: Bool {
+        applied.isEmpty && unaccounted.isEmpty
+    }
+}
+
 /// Writes a pmset profile as root: the passwordless `sudo -n` first, vector by vector; the
-/// administrator dialog only when sudo itself refuses, and only for the vectors not yet
-/// applied. A vector that ran as root and failed stops the profile with its own stderr: no
-/// dialog for a command line that would fail again, no re-run of applied vectors. Nothing
-/// but `pmset` with fixed keys ever runs as root.
+/// administrator dialog when sudo itself does not run a vector (a denial, or a failure of
+/// sudo's own), and only for the vectors not yet applied. A vector that ran as root and
+/// failed stops the profile with pmset's own stderr: no dialog for a command line that
+/// would fail again, no re-run of applied vectors. Nothing but `pmset` with fixed keys
+/// ever runs as root.
 public struct PrivilegedRunner {
     private let commands: CommandRunning
 
@@ -52,45 +71,76 @@ public struct PrivilegedRunner {
         self.commands = commands
     }
 
-    public func write(_ profile: PmsetProfile) -> Result<Void, PrivilegeError> {
-        let vectors = profile.vectors
-        var remaining = vectors[...]
+    public func write(_ profile: PmsetProfile) -> PrivilegedWrite {
+        var outcome = PrivilegedWrite()
+        var remaining = profile.vectors[...]
+        // Set when sudo failed for a reason other than a plain denial: the line that ran and
+        // what sudo said, reported together with the dialog's outcome.
+        var sudoFailure: String?
         while let vector = remaining.first {
-            let result = commands.run(SystemCommands.sudoNonInteractive(vector))
+            let sudoLine = SystemCommands.sudoNonInteractive(vector)
+            let result = commands.run(sudoLine)
             if result.succeeded {
-                remaining.removeFirst()
+                outcome.applied.append(remaining.removeFirst())
                 continue
             }
             if SystemStateParser.isSudoDenial(result) {
                 break
             }
-            return .failure(.commandFailed(vector, exitStatus: result.exitStatus, message: Self.text(of: result)))
+            if SystemStateParser.isSudoFailure(result) {
+                sudoFailure = Self.commandLine(sudoLine, result)
+                break
+            }
+            // pmset itself, as root: its exit status and its stderr, nothing else ran.
+            outcome.error = .commandFailed(vector, exitStatus: result.exitStatus, message: Self.text(of: result))
+            return outcome
         }
         guard !remaining.isEmpty else {
-            return .success(())
+            return outcome
         }
         let script: CommandVector
         do {
             script = try SystemCommands.administratorScript(Array(remaining))
         } catch let error as PrivilegeError {
-            return .failure(error)
+            outcome.error = error
+            return outcome
         } catch {
-            return .failure(.declinedOrFailed(String(describing: error)))
+            outcome.error = .declinedOrFailed(String(describing: error))
+            return outcome
         }
         let result = commands.run(script)
         if result.succeeded {
-            return .success(())
+            outcome.applied.append(contentsOf: remaining)
+            return outcome
         }
-        return .failure(.declinedOrFailed(Self.text(of: result, fallback: "administrator dialog")))
+        if !SystemStateParser.isDialogCancelled(result) {
+            // The chain ran and stopped at a failing call: every call before it applied,
+            // the failing one and the ones after it did not; which was which is unknown.
+            outcome.unaccounted = Array(remaining.dropLast())
+        }
+        let dialogText = Self.text(of: result, fallback: "administrator dialog")
+        outcome.error = .declinedOrFailed(sudoFailure.map { "\($0), then \(dialogText)" } ?? dialogText)
+        return outcome
     }
 
-    /// The head of stderr, else of stdout, else the exit status.
+    /// The head of stderr, else of stdout; the fallback plus the exit status when both are
+    /// empty, or empty when there is no fallback.
     private static func text(of result: CommandResult, fallback: String = "") -> String {
         let text = result.stderr.isEmpty ? result.stdout : result.stderr
         if text.isEmpty {
-            return "\(fallback.isEmpty ? "" : fallback + " ")exit \(result.exitStatus)"
+            return fallback.isEmpty ? "" : "\(fallback) exit \(result.exitStatus)"
         }
         return SystemStateParser.head(text)
+    }
+
+    /// `<command line> exit <status>`, plus the head of the output when there is one.
+    static func commandLine(_ vector: CommandVector, _ result: CommandResult) -> String {
+        commandLine(vector, exitStatus: result.exitStatus, message: text(of: result))
+    }
+
+    static func commandLine(_ vector: CommandVector, exitStatus: Int32, message: String) -> String {
+        let line = "\(vector.commandLine) exit \(exitStatus)"
+        return message.isEmpty ? line : "\(line): \(message)"
     }
 }
 
@@ -127,6 +177,7 @@ public final class SettingsCoordinator {
         stored = store.load()
         persisted = stored
         snapshot.armedByRestwatt = stored.lidClosedAwakeArmedByRestwatt
+        snapshot.rememberedAwake = stored.awake
         let observed = readSleepDisabled()
         snapshot.sleepDisabled = observed
         perform(SettingsReconciler.launchActions(stored: stored, observedSleepDisabled: observed))
@@ -143,6 +194,7 @@ public final class SettingsCoordinator {
             snapshot.awake[assertion] = tokens[assertion] != nil
         }
         snapshot.armedByRestwatt = stored.lidClosedAwakeArmedByRestwatt
+        snapshot.rememberedAwake = stored.awake
     }
 
     /// A click on the toggle: performs its actions, re-reads the state, then settles the
@@ -216,6 +268,8 @@ public final class SettingsCoordinator {
             }
 
         case .release(let assertion):
+            // Without a token this only clears the remembered choice: the click on a stored
+            // assertion the system refuses takes the choice out of the file.
             if let token = tokens.removeValue(forKey: assertion) {
                 assertions.release(token)
             }
@@ -223,7 +277,8 @@ public final class SettingsCoordinator {
             return .success(())
 
         case .writePmset(let profile, let armed):
-            if armed, !stored.lidClosedAwakeArmedByRestwatt {
+            let recordWrittenAhead = armed && !stored.lidClosedAwakeArmedByRestwatt
+            if recordWrittenAhead {
                 // Write-ahead: the record goes to disk before root touches pmset. Without the
                 // record there is no write, or a crash in between would leave a
                 // `disablesleep 1` nobody takes back.
@@ -234,26 +289,28 @@ public final class SettingsCoordinator {
                 }
                 snapshot.armedByRestwatt = true
             }
-            switch privileged.write(profile) {
-            case .success:
+            let outcome = privileged.write(profile)
+            guard let error = outcome.error else {
                 stored.lidClosedAwakeArmedByRestwatt = armed
                 snapshot.armedByRestwatt = armed
                 return .success(())
-            case .failure(.declinedOrFailed(let reason)):
-                return .failure(SettingsFailure(reason))
-            case .failure(.commandFailed(let vector, let exitStatus, let message)):
-                return .failure(SettingsFailure("\(vector.commandLine) exit \(exitStatus): \(message)"))
-            case .failure(.invalidToken(let token)):
-                return .failure(SettingsFailure("refused to run token \(token)"))
             }
+            if recordWrittenAhead, !Self.keepsWriteAheadRecord(outcome) {
+                // The record follows the outcome of the write, not a later observation that
+                // may be unreadable: nothing reached pmset, so there is nothing to take back.
+                stored.lidClosedAwakeArmedByRestwatt = false
+                snapshot.armedByRestwatt = false
+            }
+            return .failure(Self.failure(error))
 
         case .setArmed(let armed):
             stored.lidClosedAwakeArmedByRestwatt = armed
             snapshot.armedByRestwatt = armed
             return .success(())
 
-        case .refuseLidClosedWrite(let reason):
-            return .failure(SettingsFailure("not written, could not read pmset: \(reason)"))
+        case .refuseLidClosedWrite:
+            // The reason sits in the note under the toggle already; it is not repeated here.
+            return .failure(SettingsFailure("not written while SleepDisabled could not be read"))
 
         case .bootstrapAndKickstart(let service):
             guard let bootstrap = SystemCommands.launchctlBootstrap(service, uid: uid),
@@ -317,6 +374,25 @@ public final class SettingsCoordinator {
 
     private static func failure(_ error: Error) -> SettingsFailure {
         (error as? SettingsFailure) ?? SettingsFailure(String(describing: error))
+    }
+
+    private static func failure(_ error: PrivilegeError) -> SettingsFailure {
+        switch error {
+        case .declinedOrFailed(let reason):
+            return SettingsFailure(reason)
+        case .commandFailed(let vector, let exitStatus, let message):
+            return SettingsFailure(PrivilegedRunner.commandLine(vector, exitStatus: exitStatus, message: message))
+        case .invalidToken(let token):
+            return SettingsFailure("refused to run token \(token)")
+        }
+    }
+
+    /// Whether a write-ahead record survives a failed awake write: only when a vector was,
+    /// or may have been, applied, so quit or the next launch takes it back. A write that
+    /// reached nothing (cancelled dialog, sudo denied and dialog declined, the one vector
+    /// refused) is disarmed at once, whatever `pmset -g` says afterwards.
+    static func keepsWriteAheadRecord(_ outcome: PrivilegedWrite) -> Bool {
+        !outcome.nothingApplied
     }
 
     // MARK: Observation

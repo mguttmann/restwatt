@@ -122,6 +122,26 @@ final class SystemStateParserTests: XCTestCase {
         XCTAssertFalse(SystemStateParser.isSudoDenial(CommandResult(exitStatus: 1, stderr: "pmset: a password is required\n")), "the sudo: prefix is part of the marker")
     }
 
+    /// Ticket 7 (a): sudo failing on its own account is told from pmset failing by the
+    /// `sudo:` prefix on stderr; without it, or with another exit status, the failure is the
+    /// command's (the conservative reading: no dialog for a line that would fail again).
+    func testASudoLineOnStderrIsASudoFailureDenialOrNot() {
+        XCTAssertTrue(SystemStateParser.isSudoFailure(CommandResult(exitStatus: 1, stderr: "sudo: a password is required\n")))
+        XCTAssertTrue(SystemStateParser.isSudoFailure(CommandResult(
+            exitStatus: 1, stderr: "sudo: effective uid is not 0, is /usr/bin/sudo on a file system with the 'nosuid' option set or an NFS file system without root privileges?\n")))
+        XCTAssertTrue(SystemStateParser.isSudoFailure(CommandResult(exitStatus: 1, stderr: "sudo: /etc/sudoers is owned by uid 501, should be 0\nsudo: no valid sudoers sources found, quitting\n")))
+        XCTAssertFalse(SystemStateParser.isSudoFailure(CommandResult(exitStatus: 1, stderr: "pmset: hibernatemode is not supported on this system\n")))
+        XCTAssertFalse(SystemStateParser.isSudoFailure(CommandResult(exitStatus: 1)), "silence is the command's failure")
+        XCTAssertFalse(SystemStateParser.isSudoFailure(CommandResult(exitStatus: 2, stderr: "sudo: a password is required\n")))
+        XCTAssertFalse(SystemStateParser.isSudoFailure(CommandResult(exitStatus: 1, stderr: "Usage: pmset <options>\nsee sudo: for details\n")), "the prefix is the marker")
+    }
+
+    func testACancelledDialogIsToldFromAFailedOne() {
+        XCTAssertTrue(SystemStateParser.isDialogCancelled(CommandResult(exitStatus: 1, stderr: "execution error: User canceled. (-128)\n")))
+        XCTAssertFalse(SystemStateParser.isDialogCancelled(CommandResult(exitStatus: 1, stderr: "execution error: pmset: hibernatemode is not supported on this system (1)\n")))
+        XCTAssertFalse(SystemStateParser.isDialogCancelled(CommandResult(exitStatus: 0)))
+    }
+
     /// Ticket 6 minor: `kIOReturnNoMemory` style codes have the high bit set and rendered as
     /// a negative hex string before; the eight IOKit digits are what the fixture shows.
     func testIOReturnRendersAsUnsignedHex() {

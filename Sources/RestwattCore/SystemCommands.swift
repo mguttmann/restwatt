@@ -50,11 +50,14 @@ public enum PmsetProfile: Equatable, Sendable, CaseIterable {
 }
 
 public enum PrivilegeError: Error, Equatable, Sendable {
-    /// `sudo -n` was denied and the administrator dialog did not run the remaining vectors;
-    /// the text is the head of what the dialog reported (cancel, or the failing command).
+    /// `sudo -n` did not run the remaining vectors (a denial, or a failure of sudo itself)
+    /// and neither did the administrator dialog; the text is the head of what the dialog
+    /// reported (cancel, or the failing command), preceded by the sudo line and its own
+    /// message when sudo failed for a reason other than a plain denial.
     case declinedOrFailed(String)
     /// `sudo -n` ran the vector as root and `pmset` itself refused it. The profile stops at
-    /// this vector; the vectors before it stay applied, no dialog opens.
+    /// this vector; the vectors before it stay applied, no dialog opens. `message` is the
+    /// head of pmset's stderr and empty when it printed nothing.
     case commandFailed(CommandVector, exitStatus: Int32, message: String)
     /// A token would not survive being quoted into a shell script. Cannot happen with the
     /// constants in this file; guards future edits.

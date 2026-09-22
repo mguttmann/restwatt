@@ -194,6 +194,9 @@ public struct SettingsSnapshot: Equatable, Sendable {
     public var sleepDisabled: Observation<Bool>
     /// Mirror of `StoredSettings.lidClosedAwakeArmedByRestwatt`.
     public var armedByRestwatt: Bool
+    /// Mirror of `StoredSettings.awake`, the remembered choice per assertion. Never decides
+    /// a checkmark; it decides what a click on an off-looking, remembered assertion means.
+    public var rememberedAwake: [AwakeAssertion: Bool]
     public var sync: [SyncService: ServiceState]
     /// Reason the last action on a toggle failed; cleared when the next action succeeds.
     public var lastError: [SettingKey: String]
@@ -203,12 +206,14 @@ public struct SettingsSnapshot: Equatable, Sendable {
     public init(awake: [AwakeAssertion: Bool] = [:],
                 sleepDisabled: Observation<Bool> = .unknown("not read yet"),
                 armedByRestwatt: Bool = false,
+                rememberedAwake: [AwakeAssertion: Bool] = [:],
                 sync: [SyncService: ServiceState] = [:],
                 lastError: [SettingKey: String] = [:],
                 storeError: String? = nil) {
         self.awake = awake
         self.sleepDisabled = sleepDisabled
         self.armedByRestwatt = armedByRestwatt
+        self.rememberedAwake = rememberedAwake
         self.sync = sync
         self.lastError = lastError
         self.storeError = storeError

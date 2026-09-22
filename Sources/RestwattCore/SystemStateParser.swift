@@ -49,6 +49,29 @@ public enum SystemStateParser {
         }
     }
 
+    /// True when a `sudo -n <command>` result is sudo failing on its own account, denial or
+    /// not: exit status 1 and a line on stderr that sudo prefixed with `sudo:` (a broken
+    /// sudo configuration, a `nosuid` mount, a denial). Deliberately conservative: `pmset` prefixes
+    /// its own messages with `pmset:` and a silent exit 1 says nothing, so both count as the
+    /// command's failure, never as sudo's.
+    public static func isSudoFailure(_ result: CommandResult) -> Bool {
+        guard result.exitStatus == 1 else {
+            return false
+        }
+        return result.stderr.split(separator: "\n").contains {
+            $0.trimmingCharacters(in: .whitespaces).hasPrefix("sudo:")
+        }
+    }
+
+    /// What `osascript` reports when the administrator dialog is cancelled: AppleScript's
+    /// `User canceled` error, number -128. Nothing ran as root then.
+    public static let dialogCancelledMarker = "(-128)"
+
+    /// True when a failed administrator dialog was cancelled rather than run.
+    public static func isDialogCancelled(_ result: CommandResult) -> Bool {
+        !result.succeeded && result.stderr.contains(dialogCancelledMarker)
+    }
+
     /// The text `launchctl print` and `bootout`/`bootstrap` print for a label that is not
     /// loaded in the domain.
     public static let launchctlNotFoundMarker = "Could not find service"
