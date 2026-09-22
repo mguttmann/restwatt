@@ -78,9 +78,12 @@ final class SettingsCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.snapshot.isOn(.lidClosedAwake))
         XCTAssertTrue(coordinator.snapshot.armedByRestwatt)
         XCTAssertEqual(store.stored?.lidClosedAwakeArmedByRestwatt, true)
-        // After the action the state is re-read: pmset -g, then the two launchd services.
-        XCTAssertEqual(Array(runner.calls.suffix(3)), [
+        // After the action the state is re-read: pmset -g, the two Energy Mode reads, then
+        // the two launchd services.
+        XCTAssertEqual(Array(runner.calls.suffix(5)), [
             SystemCommands.pmsetRead,
+            SystemCommands.pmsetReadCapabilities,
+            SystemCommands.pmsetReadCustom,
             SystemCommands.launchctlPrint(SyncService.iCloudDrive.rawValue, uid: testUID),
             SystemCommands.launchctlPrint(SyncService.iCloudPhotos.rawValue, uid: testUID),
         ])
@@ -984,5 +987,213 @@ final class SettingsCoordinatorTests: XCTestCase {
         coordinator.toggle(.awake(.idleSleep))
         XCTAssertTrue(coordinator.snapshot.isOn(.awake(.idleSleep)))
         XCTAssertEqual(store.stored, StoredSettings(awake: [.idleSleep: true]))
+    }
+
+    // MARK: Energy Mode (ticket 11), Manuel's Mac: on battery, powermode 1, AC 2, passwordless
+
+    private var onBattery: Observation<EnergyModeObservation> {
+        .known(EnergyModeObservation(source: .battery, rawValue: 1, highPowerCapable: true))
+    }
+
+    func testRefreshReadsTheEnergyModeOfTheCurrentSourceInAFixedOrder() {
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.calls.removeAll()
+
+        coordinator.refreshObserved()
+
+        XCTAssertEqual(runner.calls, [
+            SystemCommands.pmsetRead,
+            SystemCommands.pmsetReadCapabilities,
+            SystemCommands.pmsetReadCustom,
+            SystemCommands.launchctlPrint(SyncService.iCloudDrive.rawValue, uid: testUID),
+            SystemCommands.launchctlPrint(SyncService.iCloudPhotos.rawValue, uid: testUID),
+        ])
+        XCTAssertEqual(coordinator.snapshot.energyMode, onBattery)
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.lowPower)))
+        XCTAssertFalse(coordinator.snapshot.isOn(.energyMode(.automatic)))
+        XCTAssertFalse(coordinator.snapshot.isOn(.energyMode(.highPower)))
+        XCTAssertEqual(runner.privilegedPmsetVectors, [], "reading never runs anything as root")
+    }
+
+    func testEnergyModeClickWritesExactlyOneVectorThroughSudoAndStoresNothing() {
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.energyMode(.automatic))
+
+        XCTAssertEqual(pmsetWriteCalls, [SystemCommands.sudoNonInteractive(SystemCommands.pmsetEnergyMode(.automatic, source: .battery))])
+        XCTAssertEqual(pmsetWriteCalls.first?.arguments, ["-n", "/usr/bin/pmset", "-b", "lowpowermode", "0"])
+        XCTAssertEqual(runner.privilegedPmsetVectors, [SystemCommands.pmsetEnergyMode(.automatic, source: .battery)])
+        XCTAssertEqual(runner.energyModes[.ac], 2, "the other source is untouched")
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.automatic)))
+        XCTAssertFalse(coordinator.snapshot.isOn(.energyMode(.lowPower)))
+        XCTAssertNil(coordinator.snapshot.lastError[.energyMode(.automatic)])
+        XCTAssertEqual(store.saveCount, 0, "the energy mode is never stored")
+        XCTAssertNil(store.stored)
+        XCTAssertFalse(coordinator.snapshot.armedByRestwatt, "nothing is armed")
+        XCTAssertEqual(runner.sleepDisabled, false, "the lid-closed setting is untouched")
+    }
+
+    func testClickOnTheMarkedEnergyModeRowRunsNothingAsRoot() {
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.energyMode(.lowPower))
+
+        XCTAssertEqual(pmsetWriteCalls, [])
+        XCTAssertEqual(runner.privilegedPmsetVectors, [])
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.lowPower)))
+        XCTAssertNil(coordinator.snapshot.lastError[.energyMode(.lowPower)])
+    }
+
+    func testEnergyModeOnACWritesTheACFlag() {
+        runner.currentSource = .ac
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        XCTAssertEqual(coordinator.snapshot.energyMode, .known(EnergyModeObservation(source: .ac, rawValue: 2, highPowerCapable: true)))
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.highPower)))
+
+        coordinator.toggle(.energyMode(.lowPower))
+
+        XCTAssertEqual(runner.privilegedPmsetVectors, [CommandVector("/usr/bin/pmset", ["-c", "lowpowermode", "1"])])
+        XCTAssertEqual(runner.energyModes[.battery], 1, "the battery value is untouched")
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.lowPower)))
+    }
+
+    func testEnergyModeFallsBackToOneDialogWithTheOneVectorWhenSudoDenies() throws {
+        runner.sudoPasswordless = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.energyMode(.automatic))
+
+        let vector = SystemCommands.pmsetEnergyMode(.automatic, source: .battery)
+        XCTAssertEqual(pmsetWriteCalls, [
+            SystemCommands.sudoNonInteractive(vector),
+            try SystemCommands.administratorScript([vector]),
+        ])
+        XCTAssertEqual(pmsetWriteCalls[1].arguments[1], "do shell script \"/usr/bin/pmset -b lowpowermode 0\" with administrator privileges")
+        XCTAssertEqual(runner.privilegedPmsetVectors, [vector])
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.automatic)))
+        XCTAssertNil(coordinator.snapshot.lastError[.energyMode(.automatic)])
+    }
+
+    func testEnergyModeCancelledDialogKeepsTheObservedCheckmark() {
+        runner.sudoPasswordless = false
+        runner.administratorDialogAccepted = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.energyMode(.automatic))
+
+        XCTAssertEqual(runner.privilegedPmsetVectors, [])
+        XCTAssertEqual(coordinator.snapshot.lastError[.energyMode(.automatic)], "execution error: User canceled. (-128)")
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.lowPower)), "the checkmark follows the value read back")
+        XCTAssertFalse(coordinator.snapshot.isOn(.energyMode(.automatic)))
+    }
+
+    /// pmset itself refusing the value (a mapping other than assumed, or a Mac without the
+    /// mode) is the command's failure: its stderr lands under the row and no dialog opens.
+    func testEnergyModeRefusedByPmsetShowsItsStderrWithoutADialog() {
+        runner.refusedEnergyModeValues = [2]
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.energyMode(.highPower))
+
+        XCTAssertEqual(coordinator.snapshot.lastError[.energyMode(.highPower)],
+                       "/usr/bin/pmset -b lowpowermode 2 exit 1: pmset: lowpowermode 2 is not supported on this system")
+        XCTAssertFalse(runner.calls.contains { $0.executable == SystemCommands.osascript }, "no dialog for a line that would fail again")
+        XCTAssertEqual(runner.privilegedPmsetVectors, [])
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.lowPower)))
+        XCTAssertFalse(coordinator.snapshot.isOn(.energyMode(.highPower)))
+    }
+
+    /// Exit 0 proves nothing: the value read back decides.
+    func testEnergyModeAcceptedButUnchangedIsReportedFromTheReadBack() {
+        runner.energyModeWritesApply = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.energyMode(.automatic))
+
+        XCTAssertEqual(runner.privilegedPmsetVectors, [SystemCommands.pmsetEnergyMode(.automatic, source: .battery)])
+        XCTAssertEqual(coordinator.snapshot.lastError[.energyMode(.automatic)],
+                       "pmset accepted lowpowermode 0 but reports powermode 1 for Battery Power")
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.lowPower)))
+        XCTAssertFalse(coordinator.snapshot.isOn(.energyMode(.automatic)))
+    }
+
+    func testEnergyModeWithUnreadableCapabilitiesRefusesTheClickWithoutRoot() {
+        runner.capReadFails = true
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        XCTAssertEqual(coordinator.snapshot.energyMode, .unknown("pmset -g cap exit 1: pmset: could not read capabilities"))
+        XCTAssertFalse(runner.calls.contains(SystemCommands.pmsetReadCustom), "no source, no value to read")
+
+        coordinator.toggle(.energyMode(.automatic))
+
+        XCTAssertEqual(pmsetWriteCalls, [])
+        XCTAssertEqual(runner.privilegedPmsetVectors, [])
+        XCTAssertEqual(coordinator.snapshot.lastError[.energyMode(.automatic)], "not written while the power source could not be read")
+        for mode in EnergyMode.allCases {
+            XCTAssertFalse(coordinator.snapshot.isOn(.energyMode(mode)))
+        }
+    }
+
+    func testEnergyModeUnreadableAfterTheWriteIsReportedAsSuch() {
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.customReadFails = true
+
+        coordinator.toggle(.energyMode(.automatic))
+
+        XCTAssertEqual(runner.privilegedPmsetVectors, [SystemCommands.pmsetEnergyMode(.automatic, source: .battery)])
+        XCTAssertEqual(coordinator.snapshot.lastError[.energyMode(.automatic)],
+                       "written, but the energy mode could not be re-read: pmset -g custom exit 1: pmset: could not read settings")
+        XCTAssertEqual(coordinator.snapshot.energyMode, .unknown("pmset -g custom exit 1: pmset: could not read settings"))
+    }
+
+    func testEnergyModeWithAnUnknownSourceNameIsUnknown() {
+        runner.capSourceName = "UPS Power"
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        XCTAssertEqual(coordinator.snapshot.energyMode, .unknown("pmset -g cap names an unknown power source"))
+        coordinator.toggle(.energyMode(.lowPower))
+        XCTAssertEqual(pmsetWriteCalls, [])
+    }
+
+    func testEnergyModeWithoutAPowermodeLineReadsAsAutomatic() {
+        runner.energyModes = [.battery: nil, .ac: 2]
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        XCTAssertEqual(coordinator.snapshot.energyMode, .known(EnergyModeObservation(source: .battery, rawValue: nil, highPowerCapable: true)))
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.automatic)))
+
+        coordinator.toggle(.energyMode(.automatic))
+        XCTAssertEqual(pmsetWriteCalls, [], "already Automatic, nothing to write")
+
+        coordinator.toggle(.energyMode(.lowPower))
+        XCTAssertEqual(runner.privilegedPmsetVectors, [SystemCommands.pmsetEnergyMode(.lowPower, source: .battery)])
+        XCTAssertTrue(coordinator.snapshot.isOn(.energyMode(.lowPower)))
+    }
+
+    func testEnergyModeWithoutTheSourceBlockIsUnknown() {
+        runner.energyModes = [.ac: 2]
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        XCTAssertEqual(coordinator.snapshot.energyMode, .unknown("pmset -g custom has no Battery Power block"))
+    }
+
+    func testEnergyModeCapabilityWithoutHighPowerIsObserved() {
+        runner.highPowerCapable = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        XCTAssertEqual(coordinator.snapshot.energyMode, .known(EnergyModeObservation(source: .battery, rawValue: 1, highPowerCapable: false)))
     }
 }

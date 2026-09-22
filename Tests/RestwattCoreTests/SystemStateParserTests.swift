@@ -156,4 +156,87 @@ final class SystemStateParserTests: XCTestCase {
         XCTAssertEqual(SystemStateParser.head(String(repeating: "x", count: 200)).count, 120)
         XCTAssertEqual(SystemStateParser.head(""), "")
     }
+
+    // MARK: pmset -g custom (ticket 11)
+
+    /// The measured output of Manuel's Mac on 2026-09-22: Battery 1, AC 2.
+    func testMeasuredCustomOutputReportsBothSources() {
+        let output = SystemFixtures.pmsetCustom([.battery: 1, .ac: 2])
+        XCTAssertTrue(output.hasPrefix("Battery Power:\n Sleep On Power Button 1\n powermode            1\n"))
+        XCTAssertEqual(SystemStateParser.parsePowerModes(pmsetCustomOutput: output), [.battery: 1, .ac: 2])
+    }
+
+    /// Tester hardening (ticket 11): the generator is pinned to the verbatim measured dump, and
+    /// the parser is run on that real artifact rather than only on the generated shape.
+    func testGeneratedCustomFixtureReproducesTheMeasuredDumpVerbatim() {
+        XCTAssertEqual(SystemFixtures.pmsetCustom([.battery: 1, .ac: 2]), SystemFixtures.pmsetCustomMeasured)
+        XCTAssertEqual(SystemStateParser.parsePowerModes(pmsetCustomOutput: SystemFixtures.pmsetCustomMeasured), [.battery: 1, .ac: 2])
+        XCTAssertFalse(SystemFixtures.pmsetCustomMeasured.contains("lowpowermode"),
+                       "pmset reports the write key lowpowermode back as powermode")
+    }
+
+    func testABlockWithoutThePowermodeLineMapsToNil() {
+        let modes = SystemStateParser.parsePowerModes(pmsetCustomOutput: SystemFixtures.pmsetCustom([.battery: nil, .ac: 2]))
+        XCTAssertEqual(modes, [.battery: nil, .ac: 2])
+        XCTAssertNotNil(modes?.index(forKey: .battery), "the block was seen")
+        XCTAssertEqual(modes?[.battery], .some(nil))
+    }
+
+    func testASourceWithoutABlockIsAbsent() {
+        let modes = SystemStateParser.parsePowerModes(pmsetCustomOutput: SystemFixtures.pmsetCustom([.ac: 2]))
+        XCTAssertEqual(modes, [.ac: 2])
+        XCTAssertNil(modes?.index(forKey: .battery))
+    }
+
+    func testEmptyCustomOutputIsNoStatement() {
+        XCTAssertNil(SystemStateParser.parsePowerModes(pmsetCustomOutput: ""))
+        XCTAssertNil(SystemStateParser.parsePowerModes(pmsetCustomOutput: "\n\n"))
+        XCTAssertNil(SystemStateParser.parsePowerModes(pmsetCustomOutput: "pmset: could not read settings\n"))
+    }
+
+    func testAnUnknownSourceBlockIsIgnored() {
+        let output = "UPS Power:\n powermode            1\n" + SystemFixtures.pmsetCustom([.battery: 0])
+        XCTAssertEqual(SystemStateParser.parsePowerModes(pmsetCustomOutput: output), [.battery: 0])
+        XCTAssertEqual(SystemStateParser.parsePowerModes(pmsetCustomOutput: "UPS Power:\n powermode            1\n"), [:],
+                       "a header was seen, so the read is a statement about no known source")
+    }
+
+    func testCommentsAndOddValuesInCustomOutput() {
+        let commented = "Battery Power:\n powermode            2 (set by Restwatt)\n sleep                10\n"
+        XCTAssertEqual(SystemStateParser.parsePowerModes(pmsetCustomOutput: commented), [.battery: 2])
+        let odd = "Battery Power:\n powermode            abc\n"
+        XCTAssertEqual(SystemStateParser.parsePowerModes(pmsetCustomOutput: odd), [.battery: nil],
+                       "a non-numeric value counts like a missing line")
+        let tabs = "AC Power:\n powermode\t\t1\n"
+        XCTAssertEqual(SystemStateParser.parsePowerModes(pmsetCustomOutput: tabs), [.ac: 1])
+    }
+
+    // MARK: pmset -g cap (ticket 11)
+
+    func testMeasuredCapabilitiesNameTheBatteryAndListBothModeKeys() throws {
+        let parsed = try XCTUnwrap(SystemStateParser.parseCapabilities(
+            pmsetCapOutput: SystemFixtures.pmsetCap(source: "Battery Power", highPower: true)))
+        XCTAssertEqual(parsed.source, .battery)
+        XCTAssertTrue(parsed.keys.contains("lowpowermode"))
+        XCTAssertTrue(parsed.keys.contains("highpowermode"))
+        XCTAssertTrue(parsed.keys.contains("displaysleep"))
+        XCTAssertEqual(parsed.keys.count, 13)
+    }
+
+    func testCapabilitiesForACAndForAnUnknownSource() throws {
+        let ac = try XCTUnwrap(SystemStateParser.parseCapabilities(pmsetCapOutput: SystemFixtures.pmsetCap(source: "AC Power", highPower: false)))
+        XCTAssertEqual(ac.source, .ac)
+        XCTAssertFalse(ac.keys.contains("highpowermode"))
+        XCTAssertTrue(ac.keys.contains("lowpowermode"))
+
+        let ups = try XCTUnwrap(SystemStateParser.parseCapabilities(pmsetCapOutput: SystemFixtures.pmsetCap(source: "UPS Power", highPower: true)))
+        XCTAssertNil(ups.source)
+        XCTAssertFalse(ups.keys.isEmpty)
+    }
+
+    func testEmptyCapabilitiesAreNoStatement() {
+        XCTAssertNil(SystemStateParser.parseCapabilities(pmsetCapOutput: ""))
+        XCTAssertNil(SystemStateParser.parseCapabilities(pmsetCapOutput: " lowpowermode\n"), "keys without a header")
+        XCTAssertNil(SystemStateParser.parseCapabilities(pmsetCapOutput: "Battery Power:\n powermode 1\n"), "the custom output is not a capability list")
+    }
 }

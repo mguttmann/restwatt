@@ -72,8 +72,13 @@ public struct PrivilegedRunner {
     }
 
     public func write(_ profile: PmsetProfile) -> PrivilegedWrite {
+        write(profile.vectors)
+    }
+
+    /// Writes the vectors in order; the Energy Mode rows pass a single one.
+    public func write(_ vectors: [CommandVector]) -> PrivilegedWrite {
         var outcome = PrivilegedWrite()
-        var remaining = profile.vectors[...]
+        var remaining = vectors[...]
         // Set when sudo failed for a reason other than a plain denial: the line that ran and
         // what sudo said, reported together with the dialog's outcome.
         var sudoFailure: String?
@@ -187,6 +192,7 @@ public final class SettingsCoordinator {
     /// Re-reads everything the checkmarks show. Called when the menu opens and after actions.
     public func refreshObserved() {
         snapshot.sleepDisabled = readSleepDisabled()
+        snapshot.energyMode = readEnergyMode()
         for service in SyncService.allCases {
             snapshot.sync[service] = readServiceState(service)
         }
@@ -247,6 +253,8 @@ public final class SettingsCoordinator {
         case .bootstrapAndKickstart(let service), .bootout(let service),
              .launchApplication(let service), .quitApplication(let service):
             return .sync(service)
+        case .writeEnergyMode(let mode, _), .refuseEnergyModeWrite(let mode, _):
+            return .energyMode(mode)
         }
     }
 
@@ -354,6 +362,38 @@ public final class SettingsCoordinator {
                 }
             }
             return quitOne ? .success(()) : .failure(SettingsFailure("\(service.label) is not running"))
+
+        case .writeEnergyMode(let mode, let source):
+            let outcome = privileged.write([SystemCommands.pmsetEnergyMode(mode, source: source)])
+            if let error = outcome.error {
+                return .failure(Self.failure(error))
+            }
+            return checkEnergyMode(mode, source: source)
+
+        case .refuseEnergyModeWrite:
+            // The reason sits in the note under the group already; it is not repeated here.
+            return .failure(SettingsFailure("not written while the power source could not be read"))
+        }
+    }
+
+    /// Success is the value read back, not pmset's exit status: a key pmset accepts but does
+    /// not act on, or a mapping other than assumed, shows up here instead of as a wrong checkmark.
+    private func checkEnergyMode(_ mode: EnergyMode, source: PowerSource) -> Result<Void, SettingsFailure> {
+        let observed = readEnergyMode()
+        snapshot.energyMode = observed
+        let accepted = "pmset accepted \(SystemCommands.energyModeKey) \(mode.rawValue)"
+        switch observed {
+        case .known(let observation) where observation.source != source:
+            return .failure(SettingsFailure(
+                "\(accepted) for \(source.rawValue), but the power source is now \(observation.source.rawValue)"))
+        case .known(let observation):
+            if observation.mode == mode {
+                return .success(())
+            }
+            let reported = observation.rawValue.map { "powermode \($0)" } ?? "no powermode line"
+            return .failure(SettingsFailure("\(accepted) but reports \(reported) for \(source.rawValue)"))
+        case .unknown(let reason):
+            return .failure(SettingsFailure("written, but the energy mode could not be re-read: \(reason)"))
         }
     }
 
@@ -406,6 +446,33 @@ public final class SettingsCoordinator {
             return .unknown("pmset -g printed no settings")
         }
         return .known(disabled)
+    }
+
+    /// The current source and its Energy Mode: `pmset -g cap` names the source and lists
+    /// whether it can set `highpowermode`, `pmset -g custom` carries the value per source.
+    private func readEnergyMode() -> Observation<EnergyModeObservation> {
+        let capabilities = commands.run(SystemCommands.pmsetReadCapabilities)
+        guard capabilities.succeeded else {
+            return .unknown("pmset -g cap exit \(capabilities.exitStatus): \(SystemStateParser.head(capabilities.stderr))")
+        }
+        guard let parsed = SystemStateParser.parseCapabilities(pmsetCapOutput: capabilities.stdout) else {
+            return .unknown("pmset -g cap printed no capabilities")
+        }
+        guard let source = parsed.source else {
+            return .unknown("pmset -g cap names an unknown power source")
+        }
+        let custom = commands.run(SystemCommands.pmsetReadCustom)
+        guard custom.succeeded else {
+            return .unknown("pmset -g custom exit \(custom.exitStatus): \(SystemStateParser.head(custom.stderr))")
+        }
+        guard let modes = SystemStateParser.parsePowerModes(pmsetCustomOutput: custom.stdout) else {
+            return .unknown("pmset -g custom printed no settings")
+        }
+        guard let rawValue = modes[source] else {
+            return .unknown("pmset -g custom has no \(source.rawValue) block")
+        }
+        return .known(EnergyModeObservation(source: source, rawValue: rawValue,
+                                            highPowerCapable: parsed.keys.contains("highpowermode")))
     }
 
     private func readServiceState(_ service: SyncService) -> ServiceState {

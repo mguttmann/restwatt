@@ -106,10 +106,12 @@ final class SystemCommandsTests: XCTestCase {
     }
 
     /// Nothing but pmset with fixed keys ever runs as root, and no vector mentions sudoers or
-    /// feeds a password on stdin.
+    /// feeds a password on stdin. Covers both profiles and the six Energy Mode vectors.
     func testOnlyPmsetRunsPrivilegedAndNothingTouchesSudoers() throws {
-        for profile in PmsetProfile.allCases {
-            for vector in profile.vectors {
+        let vectorLists = PmsetProfile.allCases.map(\.vectors) + [SystemCommands.energyModeVectors]
+        XCTAssertEqual(vectorLists.count, 3)
+        for vectors in vectorLists {
+            for vector in vectors {
                 XCTAssertEqual(vector.executable, "/usr/bin/pmset")
                 let sudo = SystemCommands.sudoNonInteractive(vector)
                 XCTAssertEqual(sudo.arguments[0], "-n")
@@ -121,10 +123,10 @@ final class SystemCommandsTests: XCTestCase {
                     XCTAssertFalse(token.lowercased().contains("visudo"), token)
                 }
             }
-            let script = try SystemCommands.administratorScriptSource(profile.vectors)
+            let script = try SystemCommands.administratorScriptSource(vectors)
             XCTAssertFalse(script.contains("sudo"))
             XCTAssertFalse(script.contains("sudoers"))
-            XCTAssertEqual(script.components(separatedBy: "/usr/bin/pmset").count - 1, profile.vectors.count)
+            XCTAssertEqual(script.components(separatedBy: "/usr/bin/pmset").count - 1, vectors.count)
         }
     }
 

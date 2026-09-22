@@ -28,6 +28,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// True between menuWillOpen and menuDidClose; no popover is armed or shown meanwhile.
     private var menuIsOpen = false
     private var latestModel: DisplayModel = .unavailable(reason: "Starting")
+    /// Reports light/dark changes of the button so the image is drawn again in the new colours.
+    private let appearanceObserver = AppearanceObservingView(frame: .zero)
+    private var powerStateObserver: NSObjectProtocol?
 
     private let version: String = {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
@@ -42,21 +45,70 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         statusItem.menu = menu
         statusItem.button?.title = "Restwatt"
         installPointerMonitor()
+        installRedrawTriggers()
     }
 
-    /// Removes the global pointer monitor; called from applicationWillTerminate.
+    /// Removes the global pointer monitor and the redraw observers; called from
+    /// applicationWillTerminate.
     func stopObservingPointer() {
         cancelHoverTimer()
         if let pointerMonitor {
             NSEvent.removeMonitor(pointerMonitor)
             self.pointerMonitor = nil
         }
+        if let powerStateObserver {
+            NotificationCenter.default.removeObserver(powerStateObserver)
+            self.powerStateObserver = nil
+        }
+        appearanceObserver.onChange = nil
     }
 
     func show(_ model: DisplayModel) {
         latestModel = model
-        statusItem.button?.title = Formatting.menuBarTitle(model)
+        render()
         popover.update(model)
+    }
+
+    // MARK: Battery-shaped image
+
+    /// The image is drawn again from the last model when the menu bar's appearance changes
+    /// (light or dark) and when Low Power Mode goes on or off, which changes the fill colour.
+    /// Every sample redraws anyway, so both are shortcuts, not the only path.
+    private func installRedrawTriggers() {
+        statusItem.button?.addSubview(appearanceObserver)
+        appearanceObserver.onChange = { [weak self] in
+            self?.render()
+        }
+        powerStateObserver = NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.render()
+            }
+        }
+    }
+
+    /// Sets the button from `latestModel`: the battery-shaped image with the menu bar text
+    /// inside while a battery is readable, plain text otherwise. The text always stays the
+    /// accessibility label, so VoiceOver reads it as before.
+    private func render() {
+        guard let button = statusItem.button else {
+            return
+        }
+        let text = Formatting.menuBarTitle(latestModel)
+        switch latestModel {
+        case .battery(let status):
+            let tint = BatteryGlyph.tint(state: status.state, percent: status.percent,
+                                         lowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled)
+            button.image = MenuBarBatteryRenderer.image(
+                text: text, percent: status.percent, tint: tint, appearance: button.effectiveAppearance)
+            button.imagePosition = .imageOnly
+            button.title = ""
+        case .unavailable:
+            button.image = nil
+            button.imagePosition = .noImage
+            button.title = text
+        }
+        button.setAccessibilityLabel(text)
     }
 
     // MARK: Hover popover

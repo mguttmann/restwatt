@@ -8,6 +8,55 @@ The version lives in the `VERSION` file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-22
+
+### Added
+
+- Battery-shaped menu bar item. While a battery is readable the item is a drawn image: a
+  rounded outline with a small nub on the right, a fill that grows from the left edge with
+  the charge level, and the unchanged menu bar text (`7.9 W  8:12`, `Charging  0:22`,
+  `weak source`, `On AC`, the charge level while a plug event settles) inside the outline.
+  No percentage figure is added. Outline and text take the label colour of the menu bar's
+  current appearance (light or dark); the fill is red at 20 % or less while draining, green
+  while charging or fully charged on external power, yellow while Low Power Mode is in
+  effect, and the label colour otherwise, drawn translucent so the text stays readable. The
+  image is drawn again on every sample, when the item's appearance changes and when Low
+  Power Mode goes on or off; it is not a template image. The button keeps the text as its
+  accessibility label. Without a battery the item stays plain text (`No battery`). The
+  geometry (fill width from the percent, clamped to 0 to 100) and the colour rule live in
+  `RestwattCore` (`BatteryGlyph`) with unit tests; only the AppKit drawing is app code.
+  With Restwatt's item showing the level, Apple's own battery item can be hidden in
+  System Settings (see the README).
+- `Energy Mode` group in the settings section, between `Power` and `Sync`, mirroring the
+  group of the same name in Apple's battery menu: a `Power Source: Battery` or
+  `Power Source: AC` line and the radio rows `Automatic`, `Low Power` and `High Power` as
+  checkmark items, each with the raw value `pmset` reports for it (`powermode 0`,
+  `powermode 1`, `powermode 2`) to its right. The checkmark is the value read from
+  `pmset -g custom` for the current power source (named by `pmset -g cap`) when the menu
+  opens and after each click; nothing is stored, nothing is armed and nothing is reset at
+  quit. `High Power` appears only when `pmset -g cap` lists `highpowermode` for the current
+  source or the value read is already 2. A row without a `powermode` line reads as
+  `Automatic` with a note saying so; a value outside 0, 1 and 2 marks nothing and is named.
+  Clicking an unmarked row runs exactly one fixed command as administrator through the same
+  path as the lid-closed toggle (`sudo -n` first, the administrator dialog only when sudo
+  refuses to run without a password, a `pmset` failure shown under the row without a
+  dialog): `pmset -b lowpowermode N` on battery or `pmset -c lowpowermode N` on AC, N being
+  0, 1 or 2; never `-a`, so only the current source changes, as in Apple's menu. Success
+  is the value read back, not the exit status: when `pmset -g custom` still shows another
+  value the row says so (`could not change: pmset accepted lowpowermode 2 but reports
+  powermode 1 for Battery Power`) and the checkmark stays on the observed value. Clicking
+  the marked row runs nothing. When the current source cannot be read the group shows
+  `Power Source: unknown` with the reason, marks nothing, and a click is refused without
+  running anything as root. The value mapping is confirmed for 1 = Low Power against
+  Apple's menu on the development Mac only; 0 = Automatic and 2 = High Power and the write
+  key `lowpowermode` follow `pmset -g cap` and outside documentation, which is why each row
+  shows its raw value.
+- `RestwattCore` additions with tests: `BatteryGlyph` (layout and tint), `EnergyMode`,
+  `PowerSource`, `EnergyModeObservation`, the six energy-mode command vectors, parsers for
+  `pmset -g custom` (per-source `powermode`, checked against a measured dump) and
+  `pmset -g cap`, the reconcile decisions and coordinator paths of the radio rows, and the
+  menu rows of the group.
+
 ## [0.1.0] - 2026-09-21
 
 ### Added
@@ -171,5 +220,6 @@ The version lives in the `VERSION` file.
 - GitHub Actions CI on `macos-latest` and `macos-15`: `swift build`, `swift test`,
   `make app`, bundle verification; no secrets; the checkout action is pinned by commit SHA.
 
-[Unreleased]: https://github.com/mguttmann/restwatt/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mguttmann/restwatt/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mguttmann/restwatt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mguttmann/restwatt/releases/tag/v0.1.0

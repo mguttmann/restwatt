@@ -90,6 +90,28 @@ public enum SystemCommands {
     /// Reads the settings of the current power source plus the system-wide block.
     public static let pmsetRead = CommandVector(pmset, ["-g"])
 
+    /// Reads the settings of every power source, one block per source; the Energy Mode
+    /// appears there as `powermode`.
+    public static let pmsetReadCustom = CommandVector(pmset, ["-g", "custom"])
+
+    /// Lists the keys the current power source can set, headed by the source's name.
+    public static let pmsetReadCapabilities = CommandVector(pmset, ["-g", "cap"])
+
+    /// The key `pmset` accepts for the Energy Mode. `pmset -g cap` lists it and outside
+    /// documentation uses it; `pmset -g custom` reports the value back as `powermode`.
+    public static let energyModeKey = "lowpowermode"
+
+    /// `pmset -b lowpowermode N` or `pmset -c lowpowermode N`: the Energy Mode of one source.
+    /// Never `-a`, so the change touches the current source only, as Apple's menu does.
+    public static func pmsetEnergyMode(_ mode: EnergyMode, source: PowerSource) -> CommandVector {
+        CommandVector(pmset, [source.pmsetFlag, energyModeKey, String(mode.rawValue)])
+    }
+
+    /// All six Energy Mode vectors the app can run, for the tests and the README.
+    public static let energyModeVectors: [CommandVector] = PowerSource.allCases.flatMap { source in
+        EnergyMode.allCases.map { pmsetEnergyMode($0, source: source) }
+    }
+
     public static func launchctlPrint(_ label: String, uid: uid_t) -> CommandVector {
         CommandVector(launchctl, ["print", "gui/\(uid)/\(label)"])
     }

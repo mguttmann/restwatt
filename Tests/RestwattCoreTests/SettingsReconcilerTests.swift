@@ -159,6 +159,50 @@ final class SettingsReconcilerTests: XCTestCase {
                        [.writePmset(.saver, thenArmed: false)])
     }
 
+    // MARK: Energy Mode (ticket 11)
+
+    private func energy(_ source: PowerSource, _ rawValue: Int?, highPower: Bool = true) -> SettingsSnapshot {
+        SettingsSnapshot(energyMode: .known(EnergyModeObservation(source: source, rawValue: rawValue, highPowerCapable: highPower)))
+    }
+
+    func testEnergyModeClickOnTheMarkedRowWritesNothing() {
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.lowPower), snapshot: energy(.battery, 1)), [])
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.highPower), snapshot: energy(.ac, 2)), [])
+    }
+
+    func testEnergyModeClickWritesTheModeForTheObservedSource() {
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.automatic), snapshot: energy(.battery, 1)),
+                       [.writeEnergyMode(.automatic, .battery)])
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.highPower), snapshot: energy(.battery, 1)),
+                       [.writeEnergyMode(.highPower, .battery)])
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.lowPower), snapshot: energy(.ac, 2)),
+                       [.writeEnergyMode(.lowPower, .ac)])
+    }
+
+    /// Without a readable source there is no flag to write with; the click is refused and
+    /// the reason travels to the row.
+    func testEnergyModeClickWithUnknownSourceIsRefusedWithTheReason() {
+        let unknown = SettingsSnapshot(energyMode: .unknown("pmset -g cap exit 1: pmset: could not read capabilities"))
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.automatic), snapshot: unknown),
+                       [.refuseEnergyModeWrite(.automatic, "pmset -g cap exit 1: pmset: could not read capabilities")])
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.lowPower), snapshot: SettingsSnapshot()),
+                       [.refuseEnergyModeWrite(.lowPower, "not read yet")])
+    }
+
+    /// A missing `powermode` line reads as Automatic: the Automatic row is the marked one.
+    func testEnergyModeWithoutALineTreatsAutomaticAsMarked() {
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.automatic), snapshot: energy(.battery, nil)), [])
+        XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(.lowPower), snapshot: energy(.battery, nil)),
+                       [.writeEnergyMode(.lowPower, .battery)])
+    }
+
+    func testEnergyModeWithAnUnknownValueMarksNothingAndEveryClickWrites() {
+        for mode in EnergyMode.allCases {
+            XCTAssertEqual(SettingsReconciler.toggleActions(key: .energyMode(mode), snapshot: energy(.battery, 7)),
+                           [.writeEnergyMode(mode, .battery)])
+        }
+    }
+
     func testSyncTogglesForLaunchdServicesAndOneDrive() {
         XCTAssertEqual(SettingsReconciler.toggleActions(key: .sync(.iCloudDrive), snapshot: snapshot(sync: [.iCloudDrive: .off])), [.bootstrapAndKickstart(.iCloudDrive)])
         XCTAssertEqual(SettingsReconciler.toggleActions(key: .sync(.iCloudPhotos), snapshot: snapshot(sync: [.iCloudPhotos: .loadedIdle])), [.bootout(.iCloudPhotos)])

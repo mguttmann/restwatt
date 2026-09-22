@@ -23,6 +23,12 @@ public enum SettingsAction: Equatable, Sendable {
     case bootout(SyncService)
     case launchApplication(SyncService)
     case quitApplication(SyncService)
+    /// Writes the Energy Mode of the given source as root, one fixed vector, and judges
+    /// success by the value read back. Nothing is stored and nothing is armed.
+    case writeEnergyMode(EnergyMode, PowerSource)
+    /// Refuses to write the Energy Mode because the current power source could not be read;
+    /// the text is the reason and lands under the clicked row.
+    case refuseEnergyModeWrite(EnergyMode, String)
 }
 
 /// Pure decisions: what the stored choice and the observed system state imply.
@@ -112,6 +118,16 @@ public enum SettingsReconciler {
                 return [currentlyOn ? .bootout(service) : .bootstrapAndKickstart(service)]
             }
             return [currentlyOn ? .quitApplication(service) : .launchApplication(service)]
+        case .energyMode(let mode):
+            switch snapshot.energyMode {
+            case .known(let observed):
+                // A click on the row already marked is a no-op (radio behaviour, no root call).
+                return observed.mode == mode ? [] : [.writeEnergyMode(mode, observed.source)]
+            case .unknown(let reason):
+                // Without the current source there is no flag to write with; guessing one
+                // could change the wrong source, so the click is refused.
+                return [.refuseEnergyModeWrite(mode, reason)]
+            }
         }
     }
 }

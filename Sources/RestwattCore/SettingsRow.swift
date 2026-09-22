@@ -32,6 +32,10 @@ extension Formatting {
     public static let setOutsideRestwattNote = "set outside Restwatt"
     public static let powerHeading = "Power"
     public static let syncHeading = "Sync"
+    /// Apple's group title in its own battery menu.
+    public static let energyModeHeading = "Energy Mode"
+    /// Apple's line naming the source the Energy Mode applies to.
+    public static let powerSourceNotePrefix = "Power Source: "
 
     /// The settings section, top to bottom.
     public static func settingsRows(_ snapshot: SettingsSnapshot) -> [SettingsRow] {
@@ -55,6 +59,8 @@ extension Formatting {
         }
         rows.append(contentsOf: warningRows(snapshot, lid))
 
+        rows.append(contentsOf: energyModeRows(snapshot))
+
         rows.append(SettingsRow(.heading, syncHeading))
         for service in SyncService.allCases {
             let key = SettingKey.sync(service)
@@ -66,6 +72,39 @@ extension Formatting {
         if let storeError = snapshot.storeError {
             rows.append(SettingsRow(.warning, "settings could not be saved: \(storeError)"))
         }
+        return rows
+    }
+
+    /// The Energy Mode group: the source the change applies to, one radio row per mode with
+    /// its raw `powermode` value, and a note whenever the checkmark rests on an inference or
+    /// on nothing. Exactly the row whose value was read back is marked; never a stored one.
+    private static func energyModeRows(_ snapshot: SettingsSnapshot) -> [SettingsRow] {
+        var rows: [SettingsRow] = [SettingsRow(.heading, energyModeHeading)]
+        var offered: [EnergyMode] = [.automatic, .lowPower]
+        var notes: [SettingsRow] = []
+        switch snapshot.energyMode {
+        case .known(let observed):
+            rows.append(SettingsRow(.note, powerSourceNotePrefix + observed.source.label))
+            if observed.offersHighPower {
+                offered.append(.highPower)
+            }
+            if let rawValue = observed.rawValue {
+                if observed.mode == nil {
+                    notes.append(SettingsRow(.note, "powermode \(rawValue) is not a known energy mode"))
+                }
+            } else {
+                notes.append(SettingsRow(.note, "pmset lists no powermode for \(observed.source.rawValue), read as Automatic"))
+            }
+        case .unknown(let reason):
+            rows.append(SettingsRow(.note, powerSourceNotePrefix + "unknown"))
+            notes.append(SettingsRow(.note, "could not read energy mode: \(reason)"))
+        }
+        for mode in offered {
+            let key = SettingKey.energyMode(mode)
+            rows.append(SettingsRow(.toggle(key, isOn: snapshot.isOn(key)), key.label, detail: mode.rawDetail))
+            rows.append(contentsOf: warningRows(snapshot, key))
+        }
+        rows.append(contentsOf: notes)
         return rows
     }
 

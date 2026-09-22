@@ -258,6 +258,79 @@ enum SystemFixtures {
     static let pmsetWithoutSleepDisabledLine = pmsetSleepDisabled1.replacingOccurrences(
         of: "System-wide power settings:\n SleepDisabled\t\t1\n", with: "")
 
+    /// `pmset -g custom` as measured on 2026-09-22 (`$T11/pmset-custom.txt`): one block per
+    /// source, header without a leading space, value lines with one. A nil value drops the
+    /// `powermode` line (pmset omits the key when the mode is off, per outside documentation);
+    /// a source absent from `modes` has no block.
+    static func pmsetCustom(_ modes: [PowerSource: Int?]) -> String {
+        var text = ""
+        for source in PowerSource.allCases {
+            guard let mode = modes[source] else {
+                continue
+            }
+            text += "\(source.rawValue):\n Sleep On Power Button 1\n"
+            if let mode {
+                text += " powermode            \(mode)\n"
+            }
+            text += " standby              1\n ttyskeepawake        1\n hibernatemode        3\n"
+            text += " powernap             0\n hibernatefile        /var/vm/sleepimage\n"
+            text += source == .battery ? " displaysleep         2\n womp                 0\n" : " displaysleep         10\n womp                 1\n"
+            text += " networkoversleep     0\n sleep                \(source == .battery ? 10 : 30)\n tcpkeepalive         1\n"
+            if source == .battery {
+                text += " lessbright           1\n"
+            }
+            text += " disksleep            10\n SleepServices        0\n"
+        }
+        return text
+    }
+
+    /// The VERBATIM `pmset -g custom` dump of Manuel's Mac, 2026-09-22 (`$T11/pmset-custom.txt`,
+    /// on battery, powermode 1 / AC 2). `pmsetCustom([.battery: 1, .ac: 2])` must reproduce it
+    /// byte for byte so the generated variants stay in the measured shape.
+    static let pmsetCustomMeasured = """
+Battery Power:
+ Sleep On Power Button 1
+ powermode            1
+ standby              1
+ ttyskeepawake        1
+ hibernatemode        3
+ powernap             0
+ hibernatefile        /var/vm/sleepimage
+ displaysleep         2
+ womp                 0
+ networkoversleep     0
+ sleep                10
+ tcpkeepalive         1
+ lessbright           1
+ disksleep            10
+ SleepServices        0
+AC Power:
+ Sleep On Power Button 1
+ powermode            2
+ standby              1
+ ttyskeepawake        1
+ hibernatemode        3
+ powernap             0
+ hibernatefile        /var/vm/sleepimage
+ displaysleep         10
+ womp                 1
+ networkoversleep     0
+ sleep                30
+ tcpkeepalive         1
+ disksleep            10
+ SleepServices        0\n
+"""
+
+    /// `pmset -g cap` as measured on 2026-09-22 (analyst-facts section 1.4).
+    static func pmsetCap(source: String, highPower: Bool) -> String {
+        var text = "Capabilities for \(source):\n displaysleep\n disksleep\n sleep\n womp\n lessbright\n standby\n"
+        text += " powernap\n ttyskeepawake\n hibernatemode\n hibernatefile\n tcpkeepalive\n lowpowermode\n"
+        if highPower {
+            text += " highpowermode\n"
+        }
+        return text
+    }
+
     static func launchctlRunning(_ label: String, pid: Int = 18643) -> String {
         """
         gui/503/\(label) = {
@@ -351,6 +424,20 @@ final class ScriptedCommandRunner: CommandRunning {
     /// False simulates launchctl accepting the call but changing nothing.
     var launchctlWritesApply = true
     var launchctlWriteExit: Int32 = 0
+    /// Simulated `powermode` per source as `pmset -g custom` prints it; Manuel's Mac on
+    /// 2026-09-22 (Battery 1, AC 2). A nil value is a block without the line; a missing
+    /// source has no block.
+    var energyModes: [PowerSource: Int?] = [.battery: 1, .ac: 2]
+    /// The source `pmset -g cap` names; `capSourceName` overrides the name (`UPS Power`).
+    var currentSource: PowerSource = .battery
+    var capSourceName: String?
+    var highPowerCapable = true
+    var capReadFails = false
+    var customReadFails = false
+    /// Energy Mode values the simulated pmset refuses with exit 1 and its own stderr.
+    var refusedEnergyModeValues: Set<Int> = []
+    /// False simulates pmset accepting `lowpowermode N` but changing nothing.
+    var energyModeWritesApply = true
 
     func run(_ vector: CommandVector) -> CommandResult {
         calls.append(vector)
@@ -358,6 +445,19 @@ final class ScriptedCommandRunner: CommandRunning {
         switch vector.executable {
         case SystemCommands.pmset where args == ["-g"]:
             return pmsetRead()
+
+        case SystemCommands.pmset where args == ["-g", "cap"]:
+            if capReadFails {
+                return CommandResult(exitStatus: 1, stderr: "pmset: could not read capabilities\n")
+            }
+            return CommandResult(exitStatus: 0, stdout: SystemFixtures.pmsetCap(
+                source: capSourceName ?? currentSource.rawValue, highPower: highPowerCapable))
+
+        case SystemCommands.pmset where args == ["-g", "custom"]:
+            if customReadFails {
+                return CommandResult(exitStatus: 1, stderr: "pmset: could not read settings\n")
+            }
+            return CommandResult(exitStatus: 0, stdout: SystemFixtures.pmsetCustom(energyModes))
 
         case SystemCommands.sudo:
             guard args.count > 2, args[0] == "-n", args[1] == SystemCommands.pmset else {
@@ -394,6 +494,16 @@ final class ScriptedCommandRunner: CommandRunning {
                     return CommandResult(exitStatus: 0)
                 }
             }
+            // An Energy Mode row puts exactly one vector into the dialog.
+            for energyVector in SystemCommands.energyModeVectors
+            where (try? SystemCommands.administratorScriptSource([energyVector])) == args[1] {
+                let result = applyPmset(energyVector)
+                if !result.succeeded {
+                    return CommandResult(exitStatus: result.exitStatus,
+                                         stderr: "execution error: \(result.stderr.trimmingCharacters(in: .newlines)) (\(result.exitStatus))\n")
+                }
+                return CommandResult(exitStatus: 0)
+            }
             return unscripted(vector)
 
         case SystemCommands.launchctl:
@@ -422,6 +532,20 @@ final class ScriptedCommandRunner: CommandRunning {
         if let refused = args.first(where: pmsetRefusedKeys.contains) {
             return CommandResult(exitStatus: 1,
                                  stderr: pmsetRefusesSilently ? "" : "pmset: \(refused) is not supported on this system\n")
+        }
+        if args.count == 3, args[1] == SystemCommands.energyModeKey, let value = Int(args[2]) {
+            // `pmset -b lowpowermode N` / `pmset -c lowpowermode N`.
+            if refusedEnergyModeValues.contains(value) {
+                return CommandResult(exitStatus: 1, stderr: "pmset: \(args[1]) \(value) is not supported on this system\n")
+            }
+            guard let source = PowerSource.allCases.first(where: { $0.pmsetFlag == args[0] }) else {
+                return unscripted(vector)
+            }
+            privilegedPmsetVectors.append(vector)
+            if energyModeWritesApply {
+                energyModes[source] = .some(value)
+            }
+            return CommandResult(exitStatus: 0)
         }
         privilegedPmsetVectors.append(vector)
         if let index = args.firstIndex(of: "disablesleep"), index + 1 < args.count {

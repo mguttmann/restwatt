@@ -76,12 +76,16 @@ public enum SettingKey: Hashable, Sendable {
     /// Immediate action on the running system; the checkmark shows the observed state and
     /// nothing is stored.
     case sync(SyncService)
+    /// One radio row of Apple's Energy Mode for the current power source: written with
+    /// `pmset` as root, the checkmark shows the value read back, nothing is stored.
+    case energyMode(EnergyMode)
 
     public var label: String {
         switch self {
         case .awake(let assertion): return assertion.label
         case .lidClosedAwake: return "Stay awake with the lid closed"
         case .sync(let service): return service.label
+        case .energyMode(let mode): return mode.label
         }
     }
 }
@@ -198,6 +202,8 @@ public struct SettingsSnapshot: Equatable, Sendable {
     /// a checkmark; it decides what a click on an off-looking, remembered assertion means.
     public var rememberedAwake: [AwakeAssertion: Bool]
     public var sync: [SyncService: ServiceState]
+    /// Energy Mode of the current power source as `pmset -g custom` and `pmset -g cap` report it.
+    public var energyMode: Observation<EnergyModeObservation>
     /// Reason the last action on a toggle failed; cleared when the next action succeeds.
     public var lastError: [SettingKey: String]
     /// Reason the settings file could not be written; nil after a successful write.
@@ -208,6 +214,7 @@ public struct SettingsSnapshot: Equatable, Sendable {
                 armedByRestwatt: Bool = false,
                 rememberedAwake: [AwakeAssertion: Bool] = [:],
                 sync: [SyncService: ServiceState] = [:],
+                energyMode: Observation<EnergyModeObservation> = .unknown("not read yet"),
                 lastError: [SettingKey: String] = [:],
                 storeError: String? = nil) {
         self.awake = awake
@@ -215,6 +222,7 @@ public struct SettingsSnapshot: Equatable, Sendable {
         self.armedByRestwatt = armedByRestwatt
         self.rememberedAwake = rememberedAwake
         self.sync = sync
+        self.energyMode = energyMode
         self.lastError = lastError
         self.storeError = storeError
     }
@@ -227,6 +235,11 @@ public struct SettingsSnapshot: Equatable, Sendable {
             return sleepDisabled == .known(true)
         case .sync(let service):
             return sync[service]?.isOn ?? false
+        case .energyMode(let mode):
+            guard case .known(let observed) = energyMode else {
+                return false
+            }
+            return observed.mode == mode
         }
     }
 }

@@ -4,9 +4,12 @@ A small, native macOS menu bar app that shows how much power your Mac is drawing
 its battery right now, how long the battery will last at that rate, and which of your
 processes are burning the most energy. While the battery charges it shows the charging
 power and its own time to full instead. Both estimates start from the current value and
-get steadier the longer the app runs. Its click menu also carries a few settings: keep
-the Mac, its display or its disk awake while Restwatt runs, keep the Mac awake with the
-lid closed, and start or stop iCloud Drive, iCloud Photos and OneDrive syncing.
+get steadier the longer the app runs. The menu bar item is drawn as a battery whose fill
+follows the charge level, with the figures inside it, so it can stand in for Apple's own
+battery item. Its click menu also carries a few settings: keep the Mac, its display or its
+disk awake while Restwatt runs, keep the Mac awake with the lid closed, switch Apple's
+Energy Mode (Automatic, Low Power, High Power) for the current power source, and start or
+stop iCloud Drive, iCloud Photos and OneDrive syncing.
 
 Pure Swift on AppKit, IOKit and libproc. No Electron, no web view, no dependencies, no
 network. It writes two small files: its settings and a statistics file that lets the
@@ -22,6 +25,9 @@ estimate works" and "Privacy").
   <img src="docs/screenshots/menu.png" width="460"
        alt="The click menu: the same battery rows, the top five processes, the Today section, the Power toggles (keep awake, keep display awake, keep disk awake, stay awake with the lid closed), the Sync toggles (iCloud Drive, iCloud Photos, OneDrive), the version and Quit Restwatt">
 </p>
+
+Both screenshots are from 0.1.0, before the battery-shaped item and the `Energy Mode`
+group were added.
 
 ## What it shows
 
@@ -43,6 +49,33 @@ flow through the battery, not by whether something is plugged in:
   the charge level, for example `95 %` (see "Which state is shown" below).
 
 Without a battery it reads `No battery`.
+
+**Battery shape.** While a battery is readable, the item is not plain text but a drawn
+image in the shape of a battery: a rounded outline with a small nub on the right, a fill
+that starts at the left edge and grows with the charge level (a charge level outside 0 to
+100 is clamped), and the text above inside the outline, unchanged. No percentage figure is
+added; the fill is the level. Outline and text take the label colour of the menu bar's
+current appearance, light or dark; the fill is translucent so the text over it stays
+readable, and its colour follows the convention of Apple's own item: red at 20 % or less
+while the battery drains (on battery or with a weak source), green while charging or when
+the battery is fully charged on external power, yellow while Low Power Mode is in effect
+(the state macOS reports to the process, not the row marked in the menu), and the label
+colour otherwise (draining above that level, on AC and not charging, a plug event waiting
+for the gauge). The image is drawn again on every sample, whenever the item's appearance
+changes and whenever Low Power Mode goes on or off; it is not a template image, so macOS
+does not recolour it. The button keeps the text as its accessibility label, so VoiceOver
+reads `7.9 W  8:12` as before. Without a battery the item stays plain text. The geometry
+(fill width from the percent, outline, nub, text position) and the colour rule are pure
+logic in `RestwattCore` (`BatteryGlyph`) with unit tests; only the AppKit drawing is app
+code, so the look itself (contrast, vertical position in the menu bar, whether the redraw
+on an appearance change fires promptly) has no automated test and is judged by eye; the
+next sample redraws the item in any case.
+
+With the level shown in Restwatt's item you can hide Apple's battery item: System
+Settings > Control Center > Battery, turn off `Show in Menu Bar`. Apple's battery menu
+also carries the Energy Mode switch; Restwatt's click menu has the same switch (see
+"What it can do"), so nothing is lost by hiding it. Restwatt does not change that setting
+itself.
 
 **Mouseover** on the item opens a popover with the details, without a click. It appears
 after a short delay while the pointer rests on the item and closes shortly after the
@@ -129,10 +162,12 @@ and Cmd-Q inside the menu quits.
 
 ## What it can do
 
-The click menu ends with a settings section: two headings with checkmark items under
-them. It replaces two shell scripts that used to switch the same things by hand. Every
+The click menu ends with a settings section: three headings with checkmark items under
+them. It replaces two shell scripts that used to switch the same things by hand, and the
+Energy Mode group of Apple's battery menu. Every
 checkmark shows the state Restwatt reads from the system when the menu opens and again
-after each click (the assertion it holds, `pmset -g`, `launchctl print`, the running
+after each click (the assertion it holds, `pmset -g`, `pmset -g cap`, `pmset -g custom`,
+`launchctl print`, the running
 applications), never a stored intention: a click that did not take effect leaves the
 checkmark where it was and puts the reason in an indented line under the item.
 
@@ -143,6 +178,11 @@ Power
     [ ] Keep disk awake
     [x] Stay awake with the lid closed
         system-wide, needs administrator, restored when Restwatt quits
+Energy Mode
+        Power Source: Battery
+    [ ] Automatic  powermode 0
+    [x] Low Power  powermode 1
+    [ ] High Power  powermode 2
 Sync
     [x] iCloud Drive  running
     [x] iCloud Photos  idle, starts on demand
@@ -202,7 +242,8 @@ answer. A `pmset` failure (its own `pmset:` message, an empty stderr or any othe
 status) stops the profile at that call, opens no dialog, re-runs nothing, and puts the
 failing command line, its exit status and its own message under the toggle; the calls
 before it stay applied. Nothing but `pmset` with these
-fixed arguments ever runs with administrator rights, no command line is built from user
+fixed arguments and the six fixed Energy Mode lines below ever runs with administrator
+rights, no command line is built from user
 data, and Restwatt never creates, edits or recommends a rule that lets sudo skip the
 password. Cancelling the dialog, or any other failure, leaves the checkmark off, as
 observed, with the reason under the item. The denial texts are sudo's documented wording;
@@ -244,7 +285,8 @@ Two safety facts, stated plainly:
    run your own `pmset` script on top, Restwatt still writes the saver profile at quit.
    So the toggle effectively means "while Restwatt runs"; for a Mac that stays awake
    without Restwatt, use `pmset` yourself.
-2. **Sync off stays off until something turns it on.** `iCloud Drive` (`com.apple.bird`)
+2. **Sync off stays off until something turns it on.** The same holds for the Energy
+   Mode, see below. `iCloud Drive` (`com.apple.bird`)
    and `iCloud Photos` (`com.apple.cloudphotod`) are switched with `launchctl bootstrap`
    plus `kickstart` and with `launchctl bootout` in your login session domain
    (`gui/<uid>`); `OneDrive` is started hidden and without activating it through
@@ -258,6 +300,63 @@ Two safety facts, stated plainly:
    yourself; launchd is also expected to load the two system agents again at the next
    login, but that comes from the `launchctl` manual and was not measured. `bootout`
    does not disable a service, so a reboot or re-login does not keep sync off either.
+
+**Energy Mode** is the switch from Apple's battery menu (Automatic, Low Power, High
+Power), for the power source the Mac is on right now. The group names that source the way
+Apple's menu does (`Power Source: Battery` or `Power Source: AC`) and marks the row whose
+value `pmset -g custom` reports for it; the source itself comes from the header of
+`pmset -g cap`. Both are read when the menu opens and again after each click; nothing is
+stored in the settings file, nothing is armed, and nothing is reset when Restwatt quits,
+because the mode is a setting Apple exposes to the user and is meant to outlive any app.
+The mode of the other source is neither shown nor changed, as in Apple's menu. `High
+Power` is offered only when `pmset -g cap` lists `highpowermode` for the current source
+or the value read is already 2, so a Mac without it does not get a row that `pmset`
+would refuse; on the development Mac (an Apple silicon MacBook Pro with High Power) it
+is listed, whether it is absent on a Mac without High Power was not measured. When the
+current source has no `powermode` line the row `Automatic` is marked and a note under the
+group says `pmset lists no powermode for Battery Power, read as Automatic`; a value
+outside 0, 1 and 2 marks nothing and a note says `powermode 7 is not a known energy
+mode`. When the source cannot be read (`pmset -g cap` failed or names a source Restwatt
+does not address, such as UPS power) the group says `Power Source: unknown`, marks
+nothing, names the reason, and a click is refused without running anything as root
+(`not written while the power source could not be read`).
+
+Clicking an unmarked row runs exactly one of these six fixed commands as administrator,
+through the same path as `Stay awake with the lid closed` (`sudo -n` first, the
+administrator dialog only when sudo refuses to run without a password, a `pmset` failure
+shown under the row without a dialog; see above for how the two are told apart):
+
+```
+pmset -b lowpowermode 0
+pmset -b lowpowermode 1
+pmset -b lowpowermode 2
+pmset -c lowpowermode 0
+pmset -c lowpowermode 1
+pmset -c lowpowermode 2
+```
+
+`-b` is used on battery and `-c` on AC; never `-a`, so only the current source changes.
+Clicking the marked row runs nothing. Success is the value read back, not the exit
+status: after the write Restwatt reads `pmset -g custom` again, and when the current
+source still shows another value the row says so, for example `could not change: pmset
+accepted lowpowermode 2 but reports powermode 1 for Battery Power`, and the checkmark
+stays on the observed value. A `pmset` refusal reads `could not change: /usr/bin/pmset -b
+lowpowermode 2 exit 1:` followed by pmset's own message; a re-read that fails after the
+write is reported as such (`written, but the energy mode could not be re-read`). The six
+command lines are constants in `RestwattCore` and the unit tests pin them word for word.
+
+About the values: `pmset` reports the mode as `powermode`, while the key it accepts for
+writing is `lowpowermode` (the key `pmset -g cap` lists and outside documentation uses);
+the app writes `lowpowermode` and reads `powermode`. On the development Mac the value
+1 = Low Power was confirmed against Apple's own menu (`pmset -g custom` showed
+`powermode 1` for `Battery Power` while Apple's menu had Low Power selected on battery);
+0 = Automatic and 2 = High Power are what that Mac reports and what outside documentation
+says, but were not confirmed against Apple's menu there, and no write with
+`lowpowermode` was run on that Mac during development. Until that is confirmed each row
+shows the raw value it reads or writes (`powermode 0`, `powermode 1`, `powermode 2`)
+next to its label, so a wrong assumption would be visible rather than silent: a write
+that does not land shows up under the row, and a mapping other than assumed shows up as
+a checkmark on a row whose raw value you can compare with `pmset -g custom` yourself.
 
 A few practical notes. Starting OneDrive and asking it to quit both return before the
 application has finished, so right after the click the checkmark can still show the old
@@ -455,6 +554,9 @@ as is.
   (`CurrentCapacity` as a percentage, the `BatteryData` dictionary) was only verified on
   Apple silicon; on an Intel Mac the app is expected to show `No battery` rather than
   wrong numbers. On a desktop Mac the item shows `No battery`.
+- The `High Power` row of the Energy Mode group appears only on a Mac whose `pmset -g cap`
+  lists `highpowermode` for the current power source (or that already reports the value
+  2); `Automatic` and `Low Power` are always offered.
 - To build: Xcode 16 or newer (Swift 6.0 toolchain). No third-party packages.
 
 ## Build and install
@@ -474,7 +576,8 @@ Security).
 
 Quit the app from its menu (`Quit Restwatt`). Quitting also takes back `Stay awake with
 the lid closed` if Restwatt had turned it on (see "What it can do"); on a Mac where sudo
-asks for a password that shows the administrator dialog once. There is no login item; add
+asks for a password that shows the administrator dialog once. The Energy Mode is not
+taken back: it stays as you last set it, in Restwatt or in Apple's menu. There is no login item; add
 it to your Login Items in System Settings yourself if you want it at startup.
 
 ## Footprint
@@ -538,7 +641,9 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
 - Restwatt changes the system only when you click a setting, plus the two safety writes
   described under "What it can do" (the saver profile at quit and at launch, only when
   Restwatt itself had turned the lid-closed setting on). It runs `pmset` as administrator
-  for that toggle, `launchctl bootstrap`, `kickstart` and `bootout` in your own login
+  for that toggle and for the Energy Mode rows (one fixed `pmset -b lowpowermode N` or
+  `pmset -c lowpowermode N` line per click, nothing stored, nothing written at launch or
+  quit), `launchctl bootstrap`, `kickstart` and `bootout` in your own login
   session domain for iCloud Drive and iCloud Photos, and launches or asks OneDrive to quit
   through LaunchServices. Nothing else runs with administrator rights. Restwatt itself
   starts no shell: it launches `sudo`, `pmset`, `launchctl` and `osascript` directly with
@@ -554,7 +659,11 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
   `RemainingCapacity`, `FullChargeCapacity`, `DesignCapacity`, and inside
   `AdapterDetails` only `Watts` (the rated power of the connected source). From
   IOPowerSources only the time-to-empty estimate is read. Serial numbers and
-  manufacturer data are not read, logged or shown.
+  manufacturer data are not read, logged or shown. For the Energy Mode group `pmset -g cap`
+  and `pmset -g custom` are read (without privileges) when the menu opens and after a
+  click; from their output only the source header, the `powermode` lines and the
+  capability keys are used, and the fill colour of the item asks macOS whether Low Power
+  Mode is in effect. None of this is stored.
 - From processes only the pid, the name and the rusage counters are read.
 - Restwatt watches pointer movement system-wide only to notice when the pointer rests on
   its menu bar item. It looks at the pointer position alone, not at clicks, keys or the
@@ -576,16 +685,19 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   Formatting.swift                 every user-visible string
   PointerRegionTracker.swift       pointer enter/leave transitions for the menu bar item
   DetailRow.swift                  label/value rows for the popover and the menu
-  PowerSettings.swift              settings model, sync services, stored settings, JSON codec
+  BatteryGlyph.swift               battery-shaped item: layout from text size and percent, fill colour rule
+  EnergyMode.swift                 Apple's Energy Mode values, power sources, what one refresh observed
+  PowerSettings.swift              settings model, sync services, energy mode key, stored settings, JSON codec
   SystemCommands.swift             fixed pmset, launchctl, sudo and osascript argument vectors
-  SystemStateParser.swift          parsers for pmset -g and launchctl print
+  SystemStateParser.swift          parsers for pmset -g, pmset -g custom, pmset -g cap and launchctl print
   SettingsReconciler.swift         stored fact vs observed state -> actions (launch, quit, click)
   SettingsCoordinator.swift        runs the actions behind protocols, owns the settings snapshot
   SettingsRow.swift                the settings section rows of the click menu
 Sources/RestwattApp/               the menu bar app
   main.swift                       NSApplication bootstrap, accessory activation policy
   AppDelegate.swift                timers, power-source notification, settings reconcile, wall clock, wiring
-  StatusItemController.swift       NSStatusItem title, pointer monitor, popover, menu with settings
+  StatusItemController.swift       NSStatusItem with the battery-shaped image, redraw triggers, pointer monitor, popover, menu with settings
+  MenuBarBatteryRenderer.swift     draws the battery image for the button's appearance; appearance-change subview
   DetailPopover.swift              NSPopover with the detail rows in a two-column grid
   MenuRowView.swift                view behind the display-only rows of the click menu
   IOKitBatteryReader.swift         AppleSmartBattery registry and IOPowerSources
@@ -626,10 +738,21 @@ after a plug or unplug event, the estimator behaviour in both directions (includ
 test that fails when the time constant is not adaptive), the fixtures being one measured
 96 W charger reading plus clearly marked synthetic weak-source readings,
 the ranker's handling of pid reuse, the pointer enter/leave transitions behind the hover
-popover, the settings section (the exact `pmset`, `launchctl`, `sudo` and `osascript`
-argument vectors of the two scripts it replaces, the `pmset -g` and `launchctl print`
-parsers against measured output, the reconcile decisions at launch, quit and click, the
-coordinator against a scripted double of the system, and the menu rows), the statistics
+popover, the battery-shaped item (the fill width for 0, 20, 50 and 100 percent and the
+clamp outside that range, the outline, nub and text position from a given text size, the
+image height staying inside the menu bar, and the fill colour of every power state with
+red beating yellow and charging beating everything), the settings section (the exact
+`pmset`, `launchctl`, `sudo` and `osascript`
+argument vectors of the two scripts it replaces, the six Energy Mode vectors as fixed
+arrays that never contain `-a`, the `pmset -g` and `launchctl print`
+parsers against measured output, the `pmset -g custom` parser against the measured dump
+of the development Mac and the `pmset -g cap` parser, the reconcile decisions at launch,
+quit and click including the radio rows (the marked row runs nothing, an unreadable
+source refuses the write), the
+coordinator against a scripted double of the system (for the Energy Mode: one vector
+through `sudo -n`, the dialog fallback with that one vector, a cancelled dialog, a `pmset`
+refusal without a dialog, an accepted write whose read-back disagrees, and every
+unreadable or unknown case), and the menu rows including the Energy Mode group), the statistics
 that survive a restart (every branch of the staleness rule at its edges, a resumed
 estimator not moving on its first sample and smoothing with the remembered window from
 the second, a second launch continuing where the first left off, the first entry into a
@@ -640,9 +763,11 @@ meaning a start from zero, the largest document under 4096 bytes, at most one wr
 tick and none without a change, a failed write retried, and the `Today` rows and lines
 with their example figures), and a few repository invariants: `VERSION` matches the
 latest CHANGELOG release, this README states the sampling interval and the second-sample
-delay, names the settings and the statistics file and quotes every `pmset` call the app
-can run, no source file names a shell or a password-free sudo rule, and no file contains
-an em dash or en dash.
+delay, names the settings and the statistics file, quotes every `pmset` call the app
+can run (the two profiles and the six Energy Mode vectors), states the red-fill threshold
+as the constant the tint test holds and names the `lowpowermode` write key together with
+the `powermode` line `pmset` reports it under, no source file names a shell or a
+password-free sudo rule, and no file contains an em dash or en dash.
 
 CI runs on GitHub Actions (`macos-latest` and `macos-15`, the lower edge for
 `swift-tools-version: 6.0`) on every push and pull request and needs no secrets.

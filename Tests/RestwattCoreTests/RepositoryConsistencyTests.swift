@@ -80,6 +80,30 @@ final class RepositoryConsistencyTests: XCTestCase {
         }
     }
 
+    /// Ticket 11: every Energy Mode vector appears verbatim in the README (without sudo and prefix).
+    func testReadmeQuotesEveryEnergyModeVector() throws {
+        let readme = try read("README.md")
+        for vector in SystemCommands.energyModeVectors {
+            let text = "pmset " + vector.arguments.joined(separator: " ")
+            XCTAssertTrue(readme.contains(text), "README must quote `\(text)`")
+        }
+        XCTAssertEqual(SystemCommands.energyModeVectors.count, 6)
+    }
+
+    /// The red-fill threshold in the README is the constant the tint test holds.
+    func testReadmeNamesTheLowChargeThreshold() throws {
+        let readme = try read("README.md")
+        XCTAssertTrue(readme.contains("\(BatteryGlyph.lowChargeThresholdPercent) %"),
+                      "README must state the low charge threshold of \(BatteryGlyph.lowChargeThresholdPercent) %")
+    }
+
+    /// The README names the write key and the read key pmset reports it back under.
+    func testReadmeNamesTheEnergyModeKey() throws {
+        let readme = try read("README.md")
+        XCTAssertTrue(readme.contains(SystemCommands.energyModeKey))
+        XCTAssertTrue(readme.contains("powermode"))
+    }
+
     /// Tester hardening (AC2, AC6, N2, N5): nothing in the app touches Manuel's LaunchAgent or
     /// caffeinate, nothing runs through a shell, and neither code nor docs mention a sudoers
     /// rule. The words are checked case-insensitively over every Swift source file.

@@ -32,6 +32,73 @@ public enum SystemStateParser {
         return sawSettings ? false : nil
     }
 
+    /// `powermode` per power source from `pmset -g custom`. Each source is a block headed by
+    /// its name (`Battery Power:`, `AC Power:`, no leading space), followed by value lines
+    /// with one leading space. A source whose block is present but carries no `powermode`
+    /// line (or a non-numeric one) maps to nil; a source without a block is absent from the
+    /// dictionary; a block of an unknown source (`UPS Power:`) is skipped. Nil when the output
+    /// carries no block header at all, so a failed read is never mistaken for a setting.
+    public static func parsePowerModes(pmsetCustomOutput: String) -> [PowerSource: Int?]? {
+        var sawHeader = false
+        var modes: [PowerSource: Int?] = [:]
+        var current: PowerSource?
+        for rawLine in pmsetCustomOutput.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = String(rawLine)
+            if !line.hasPrefix(" ") {
+                let header = line.trimmingCharacters(in: .whitespaces)
+                guard header.hasSuffix(":") else {
+                    current = nil
+                    continue
+                }
+                sawHeader = true
+                current = PowerSource(rawValue: String(header.dropLast()))
+                if let current, modes[current] == nil {
+                    modes[current] = .some(nil)
+                }
+                continue
+            }
+            guard let current else {
+                continue
+            }
+            let tokens = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard tokens.count >= 2, tokens[0] == "powermode" else {
+                continue
+            }
+            modes[current] = .some(Int(tokens[1]))
+        }
+        return sawHeader ? modes : nil
+    }
+
+    /// `pmset -g cap`: the source named in `Capabilities for <name>:` and the keys listed
+    /// under it, one per line with a leading space. `source` is nil for a name the app does
+    /// not address (`UPS Power`). Nil when the header is missing.
+    public static func parseCapabilities(pmsetCapOutput: String) -> (source: PowerSource?, keys: Set<String>)? {
+        let headerPrefix = "Capabilities for "
+        var source: PowerSource?
+        var sawHeader = false
+        var keys: Set<String> = []
+        for rawLine in pmsetCapOutput.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = String(rawLine)
+            if !line.hasPrefix(" ") {
+                let header = line.trimmingCharacters(in: .whitespaces)
+                guard header.hasPrefix(headerPrefix), header.hasSuffix(":") else {
+                    continue
+                }
+                sawHeader = true
+                source = PowerSource(rawValue: String(header.dropFirst(headerPrefix.count).dropLast()))
+                continue
+            }
+            guard sawHeader else {
+                continue
+            }
+            let key = line.trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty {
+                keys.insert(key)
+            }
+        }
+        return sawHeader ? (source, keys) : nil
+    }
+
     /// What `sudo -n` prints on its own stderr when it would have to ask for a password. Any
     /// other failure of a `sudo -n pmset ...` call is the command's own and never a denial.
     public static let sudoDenialMarkers = ["a password is required", "a terminal is required"]
