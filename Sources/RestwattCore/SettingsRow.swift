@@ -7,6 +7,8 @@ public struct SettingsRow: Equatable, Sendable {
         case heading
         /// A clickable toggle; `isOn` is the observed or held state, never a stored intention.
         case toggle(SettingKey, isOn: Bool)
+        /// The Open at Login item; `isOn` is the status read from the system.
+        case openAtLogin(isOn: Bool)
         /// Indented explanation under a toggle.
         case note
         /// Indented failure text under a toggle.

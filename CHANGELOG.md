@@ -8,6 +8,26 @@ The version lives in the `VERSION` file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-22
+
+### Added
+
+- `Open at Login` item in the click menu, in its own small group between the settings
+  section and the version. It adds Restwatt as a login item through Apple's
+  `SMAppService.mainApp`, so that the app starts again after a restart or a new login. It
+  is off until you click it. The checkmark is the status macOS reports, read when the menu opens
+  and after each click; nothing is stored. `enabled` is checked and a click removes the
+  login item; `notRegistered` and `notFound` are unchecked and a click adds it;
+  `requiresApproval` is unchecked with the note `needs approval in System Settings, Login
+  Items`, and a click opens the Login Items pane of System Settings instead of registering
+  again. A failed register or unregister shows `could not change:` with the reason under
+  the item and leaves the checkmark on the status read back. The status and click
+  decisions are pure logic in `RestwattCore` with unit tests against a double; the
+  `SMAppService` adapter in the app is compiled but was not exercised against the real
+  app during development. The README says to move the app to `/Applications`
+  (`make install`) before enabling it, because macOS registers the path the app runs
+  from, and that macOS may show a notification when a login item is added.
+
 ## [0.2.0] - 2026-09-22
 
 ### Added

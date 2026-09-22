@@ -9,10 +9,11 @@ follows the charge level, with the figures inside it, so it can stand in for App
 battery item. Its click menu also carries a few settings: keep the Mac, its display or its
 disk awake while Restwatt runs, keep the Mac awake with the lid closed, switch Apple's
 Energy Mode (Automatic, Low Power, High Power) for the current power source, and start or
-stop iCloud Drive, iCloud Photos and OneDrive syncing.
+stop iCloud Drive, iCloud Photos and OneDrive syncing. An `Open at Login` item lets
+Restwatt start again by itself after a restart or a new login.
 
-Pure Swift on AppKit, IOKit and libproc. No Electron, no web view, no dependencies, no
-network. It writes two small files: its settings and a statistics file that lets the
+Pure Swift on AppKit, IOKit, libproc and ServiceManagement. No Electron, no web view, no
+dependencies, no network. It writes two small files: its settings and a statistics file that lets the
 estimate and a per-process energy total for the day survive a restart (see "How the
 estimate works" and "Privacy").
 
@@ -26,8 +27,8 @@ estimate works" and "Privacy").
        alt="The click menu: the same battery rows, the top five processes, the Today section, the Power toggles (keep awake, keep display awake, keep disk awake, stay awake with the lid closed), the Sync toggles (iCloud Drive, iCloud Photos, OneDrive), the version and Quit Restwatt">
 </p>
 
-Both screenshots are from 0.1.0, before the battery-shaped item and the `Energy Mode`
-group were added.
+Both screenshots are from 0.1.0, before the battery-shaped item, the `Energy Mode`
+group and the `Open at Login` item were added.
 
 ## What it shows
 
@@ -379,6 +380,46 @@ exact commands and simulate the resulting system state; they were not exercised 
 live system during development, and clicking the items is not automated. Please open an
 issue if a toggle misbehaves on your Mac.
 
+**Open at Login** is its own small group below the settings section, above the version
+and `Quit Restwatt`. It is off until you click it: Restwatt never adds itself as a login
+item on its own. The wording is Apple's (System Settings > General > Login Items &
+Extensions). The item uses Apple's login item service for the app itself
+(`SMAppService.mainApp`), so the app is listed in that System Settings pane like any
+other app that opens at login.
+
+```
+    [x] Open at Login
+```
+
+The checkmark is the status macOS reports for the app, read each time the menu opens and
+again after a click; Restwatt stores nothing about it, neither in its settings file nor
+anywhere else. macOS reports one of four statuses:
+
+- enabled: checked, the app opens at login; a click removes the login item.
+- not registered, or not found: unchecked; a click adds the login item.
+- requires approval: the item is registered, but macOS waits for you to allow it. The
+  item is unchecked and a note under it says `needs approval in System Settings, Login
+  Items`; a click does not register again but opens that pane of System Settings, where
+  you allow it.
+
+If adding or removing the login item fails, the reason macOS gives appears in an indented
+line under the item (`could not change:` followed by it) and the checkmark stays on the
+status read back from the system, the same as for the toggles above. The line stays until
+a later click succeeds.
+
+Before you turn it on, put the app where it is going to stay, normally `/Applications`
+(`make install`, see "Build and install"). macOS registers the app at the path it is
+running from, so enabling the item from `dist/Restwatt.app` inside the repository
+registers that copy. macOS may show a notification when a login item is added.
+
+The status-to-checkmark rule, the click decision for each of the four statuses, a failed
+register and a failed unregister are pure logic in `RestwattCore` (`LoginItem.swift`),
+unit-tested against a double. The call into `SMAppService` itself is app code that is only
+compiled, not tested: registering the real Restwatt was not exercised during development
+(the service was checked with a separate throwaway app on the development Mac, where
+register and unregister worked for an ad-hoc signed bundle), and the look of the item is
+judged by eye.
+
 ## How the estimate works
 
 Restwatt reads the battery gauge (`AppleSmartBattery` in the IOKit registry) every
@@ -577,8 +618,14 @@ Security).
 Quit the app from its menu (`Quit Restwatt`). Quitting also takes back `Stay awake with
 the lid closed` if Restwatt had turned it on (see "What it can do"); on a Mac where sudo
 asks for a password that shows the administrator dialog once. The Energy Mode is not
-taken back: it stays as you last set it, in Restwatt or in Apple's menu. There is no login item; add
-it to your Login Items in System Settings yourself if you want it at startup.
+taken back: it stays as you last set it, in Restwatt or in Apple's menu.
+
+To have Restwatt start again after a restart or a new login, run `make install` first so the
+app lives in `/Applications`, open it from there, and click `Open at Login` in its menu
+(see "What it can do"). macOS registers the copy that is running, and it may show a
+notification that a login item was added. Quitting Restwatt does not remove the login
+item; click `Open at Login` again, or remove it in System Settings > General > Login Items
+& Extensions.
 
 ## Footprint
 
@@ -645,7 +692,10 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
   `pmset -c lowpowermode N` line per click, nothing stored, nothing written at launch or
   quit), `launchctl bootstrap`, `kickstart` and `bootout` in your own login
   session domain for iCloud Drive and iCloud Photos, and launches or asks OneDrive to quit
-  through LaunchServices. Nothing else runs with administrator rights. Restwatt itself
+  through LaunchServices. A click on `Open at Login` adds or removes Restwatt as a login
+  item through `SMAppService`, without administrator rights; macOS keeps that
+  registration, Restwatt stores nothing about it. Nothing else runs with administrator
+  rights. Restwatt itself
   starts no shell: it launches `sudo`, `pmset`, `launchctl` and `osascript` directly with
   fixed argument lists. The one place a shell runs is the administrator dialog, where
   macOS itself executes the fixed `pmset` line through its script runner (`osascript`,
@@ -693,6 +743,7 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   SettingsReconciler.swift         stored fact vs observed state -> actions (launch, quit, click)
   SettingsCoordinator.swift        runs the actions behind protocols, owns the settings snapshot
   SettingsRow.swift                the settings section rows of the click menu
+  LoginItem.swift                  Open at Login: the four statuses, row and click decision, coordinator
 Sources/RestwattApp/               the menu bar app
   main.swift                       NSApplication bootstrap, accessory activation policy
   AppDelegate.swift                timers, power-source notification, settings reconcile, wall clock, wiring
@@ -708,6 +759,7 @@ Sources/RestwattApp/               the menu bar app
   ApplicationSupportFile.swift     one file under Application Support: read whole, written atomically
   FileSettingsStore.swift          settings.json through ApplicationSupportFile
   FileStatisticsStore.swift        statistics.json through ApplicationSupportFile
+  ServiceManagementLoginItem.swift SMAppService.mainApp status, register, unregister, Login Items pane
 Tests/RestwattCoreTests/           XCTest suite; runs without a battery or privileges
 packaging/Info.plist.template      bundle metadata, version filled in from VERSION
 scripts/make-app.sh                assembles and ad-hoc signs dist/Restwatt.app

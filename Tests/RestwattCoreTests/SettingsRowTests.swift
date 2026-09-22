@@ -14,6 +14,7 @@ final class SettingsRowTests: XCTestCase {
             switch row.kind {
             case .heading: return row.label
             case .toggle(_, let isOn): return (isOn ? "[x] " : "[ ] ") + row.label + (row.detail.isEmpty ? "" : "  " + row.detail)
+            case .openAtLogin(let isOn): return (isOn ? "[x] " : "[ ] ") + row.label
             case .note: return "    " + row.label
             case .warning: return "  ! " + row.label
             }

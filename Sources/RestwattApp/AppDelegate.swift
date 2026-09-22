@@ -31,7 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         settings.applyStoredAtLaunch()
         self.settings = settings
-        statusItem = StatusItemController(settings: settings)
+        statusItem = StatusItemController(
+            settings: settings, loginItem: LoginItemCoordinator(loginItem: ServiceManagementLoginItem()))
 
         // One slow timer on the main run loop; target/selector keeps the callback on the
         // main actor without a Sendable closure.

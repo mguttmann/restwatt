@@ -20,6 +20,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private let statusItem: NSStatusItem
     private let settings: SettingsCoordinator
+    private let loginItem: LoginItemCoordinator
     private let menu = NSMenu()
     private let popover = DetailPopover()
     private var hoverTimer: Timer?
@@ -36,8 +37,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }()
 
-    init(settings: SettingsCoordinator) {
+    init(settings: SettingsCoordinator, loginItem: LoginItemCoordinator) {
         self.settings = settings
+        self.loginItem = loginItem
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         menu.delegate = self
@@ -223,6 +225,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         for row in Formatting.settingsRows(settings.snapshot) {
             menu.addItem(menuItem(for: row))
         }
+        // Open at Login: its own small group above the version, read from the system now.
+        menu.addItem(.separator())
+        loginItem.refresh()
+        for row in loginItem.rows {
+            menu.addItem(menuItem(for: row))
+        }
         menu.addItem(.separator())
         menu.addItem(Self.menuItem(for: DetailRow("Restwatt \(version)")))
         let quit = NSMenuItem(title: "Quit Restwatt", action: #selector(quit), keyEquivalent: "q")
@@ -274,6 +282,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 item.attributedTitle = title
             }
             return item
+        case .openAtLogin(let isOn):
+            let item = NSMenuItem(title: row.label, action: #selector(toggleLoginItem), keyEquivalent: "")
+            item.target = self
+            item.state = isOn ? .on : .off
+            return item
         case .note, .warning:
             let colour: NSColor = row.kind == .warning ? .systemOrange : .secondaryLabelColor
             let text = NSAttributedString(
@@ -289,6 +302,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             return
         }
         settings.toggle(box.key)
+    }
+
+    @objc private func toggleLoginItem() {
+        loginItem.click()
     }
 
     @objc private func quit() {
