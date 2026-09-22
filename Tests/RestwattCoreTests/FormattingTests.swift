@@ -122,6 +122,52 @@ final class FormattingTests: XCTestCase {
         XCTAssertTrue(tooltip.contains("Visible total 0.63 W over 105 processes, unaccounted 6.51 W"))
     }
 
+    func testEnergyString() {
+        XCTAssertEqual(Formatting.energy(0), "0 mWh")
+        XCTAssertEqual(Formatting.energy(0.0123), "12 mWh")
+        XCTAssertEqual(Formatting.energy(0.9994), "999 mWh")
+        XCTAssertEqual(Formatting.energy(0.9996), "1.00 Wh")
+        XCTAssertEqual(Formatting.energy(1.0234), "1.02 Wh")
+        XCTAssertEqual(Formatting.energy(12.5), "12.50 Wh")
+    }
+
+    func testTodayLines() {
+        XCTAssertEqual(Formatting.todayLines(Fixtures.todayStatistic, limit: 3), [
+            "Today (your processes, CPU energy only, estimate)",
+            "  Discord Helper (Renderer)  1.02 Wh",
+            "  node  310 mWh",
+            "  Restwatt  12 mWh",
+            "  Total today 1.74 Wh over 4:12 sampled",
+        ])
+        XCTAssertEqual(Formatting.todayLines(nil, limit: 3), [])
+    }
+
+    func testTooltipAndMenuCarryTodayOnlyWhenSampled() {
+        var withToday = discharging(estimate: estimate)
+        if case .battery(var status) = withToday {
+            status.today = Fixtures.todayStatistic
+            withToday = .battery(status)
+        }
+        let tooltip = Formatting.tooltipText(withToday)
+        XCTAssertTrue(tooltip.contains("Total today 1.74 Wh over 4:12 sampled"))
+        XCTAssertTrue(tooltip.hasSuffix("  Total today 1.74 Wh over 4:12 sampled"), "today comes after the live list")
+        XCTAssertFalse(Formatting.tooltipText(discharging(estimate: estimate)).contains("Total today"))
+
+        var many = Fixtures.todayStatistic
+        many.entries += ["d", "e", "f", "g"].map { DailyEnergyEntry(name: $0, wattHours: 0.001) }
+        if case .battery(var status) = withToday {
+            status.today = many
+            withToday = .battery(status)
+        }
+        let menu = Formatting.menuLines(withToday, version: "0.1.0")
+        XCTAssertTrue(menu.contains("  e  1 mWh"), "the menu shows up to five names")
+        XCTAssertFalse(menu.contains("  f  1 mWh"))
+        XCTAssertEqual(menu.last, "Restwatt 0.1.0")
+        let threeNames = Formatting.tooltipText(withToday)
+        XCTAssertTrue(threeNames.contains("  Restwatt  12 mWh"), "the tooltip shows three names, Restwatt is the third")
+        XCTAssertFalse(threeNames.contains("  d  1 mWh"))
+    }
+
     func testTooltipWithoutEstimateAndWhileWarmingUp() {
         let tooltip = Formatting.tooltipText(discharging(estimate: nil))
         XCTAssertTrue(tooltip.contains("waiting for the first gauge reading"))

@@ -62,6 +62,7 @@ final class DetailPopover {
         var rows = Formatting.detailRows(model)
         if case .battery(let status) = model {
             rows += Formatting.processRows(status.processReport, limit: 3)
+            rows += Formatting.todayRows(status.today, limit: 3)
         }
         let grid = NSGridView(views: rows.map(Self.cells(for:)))
         grid.translatesAutoresizingMaskIntoConstraints = false

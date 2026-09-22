@@ -70,6 +70,18 @@ final class ProcessEnergyRankerTests: XCTestCase {
         XCTAssertEqual(report.unaccountedWatts, 0)
     }
 
+    func testAggregationCarriesEveryNameAndFeedsTheReport() {
+        let aggregation = ProcessEnergyRanker.aggregate(previous: previous, current: current, dt: 30)!
+        XCTAssertEqual(aggregation.entries.map(\.name), ["yes", "Discord Helper (Renderer)", "com.apple.WebKit.WebContent", "idle"])
+        XCTAssertEqual(aggregation.processCount, 5)
+        let report = rank(limit: 2)
+        XCTAssertEqual(aggregation.totalWatts, report.visibleTotalWatts)
+        XCTAssertEqual(Array(aggregation.entries.prefix(2)), report.entries)
+        XCTAssertEqual(aggregation.report(drawWatts: 7.138, batteryIsOnlySource: true, limit: 2), report)
+        XCTAssertNil(ProcessEnergyRanker.aggregate(previous: [], current: current, dt: 30))
+        XCTAssertNil(ProcessEnergyRanker.aggregate(previous: previous, current: current, dt: 0))
+    }
+
     func testFirstRoundIsWarmingUp() {
         let report = ProcessEnergyRanker.rank(
             previous: [], current: current, dt: 0, drawWatts: 7.138, batteryIsOnlySource: true)

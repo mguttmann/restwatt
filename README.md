@@ -9,7 +9,9 @@ the Mac, its display or its disk awake while Restwatt runs, keep the Mac awake w
 lid closed, and start or stop iCloud Drive, iCloud Photos and OneDrive syncing.
 
 Pure Swift on AppKit, IOKit and libproc. No Electron, no web view, no dependencies, no
-network. The one file it writes is its settings file (see "What it can do" and "Privacy").
+network. It writes two small files: its settings and a statistics file that lets the
+estimate and a per-process energy total for the day survive a restart (see "How the
+estimate works" and "Privacy").
 
 ## What it shows
 
@@ -53,7 +55,22 @@ Discord Helper (Renderer) (2 processes)  0.42 W
 com.apple.WebKit.WebContent              0.02 W
 Restwatt                                 0.01 W
 Visible total    0.63 W over 105 processes, unaccounted 6.51 W
+
+Today (your processes, CPU energy only, estimate)
+Discord Helper (Renderer)              1.02 Wh
+node                                   310 mWh
+Restwatt                                12 mWh
+Total today          1.74 Wh over 4:12 sampled
 ```
+
+The `Today` block under the live list is the same per-process picture summed over the
+current calendar day: the CPU energy attributed to each process name since local midnight,
+in watt-hours (whole milliwatt-hours below one watt-hour, `x.xx Wh` from there), the
+three largest names in the popover, and a `Total today` line with the energy of every
+counted name and how long was sampled that day as `h:mm`. It survives a restart of the
+app (see "How the estimate works"), so on a launch later in the day it is there from the
+first tick, next to a live list that is still collecting its first interval. The block is
+absent until the first interval of the day has been sampled.
 
 With a weak source the same rows appear, `Drawing now` being what the battery still
 supplies, followed by a `Power source` row that says `connected, but it delivers less
@@ -91,8 +108,9 @@ The rows and the enter/leave logic (`PointerRegionTracker`) come from the unit-t
 automated test, so please open an issue if the popover does not appear or does not go
 away for you.
 
-**Click** on the item opens a menu with the same rows, the top five processes, the
-settings section described under "What it can do", the version number and
+**Click** on the item opens a menu with the same rows, the top five processes, the five
+largest `Today` names with the total, the settings section described under "What it can
+do", the version number and
 `Quit Restwatt`. The information lines are drawn in the normal label
 colour (they are enabled menu items without an action; selecting one only closes the
 menu). The menu is rebuilt from the latest sample each time it opens, and Cmd-Q inside
@@ -254,8 +272,9 @@ issue if a toggle misbehaves on your Mac.
 ## How the estimate works
 
 Restwatt reads the battery gauge (`AppleSmartBattery` in the IOKit registry) every
-30 seconds (`Sampling.interval` in `Sources/RestwattCore/BatteryMonitor.swift`). From
-each reading it derives:
+30 seconds (`Sampling.interval` in `Sources/RestwattCore/BatteryMonitor.swift`), plus one
+extra reading 5 seconds after the launch tick (`Sampling.secondSampleDelay`, see
+"Footprint"). From each reading it derives:
 
 - **Draw in watts**: the gauge's own `BatteryPower` figure. If that figure disagrees
   with voltage times amperage by more than 10 %, voltage times amperage wins.
@@ -289,8 +308,48 @@ more often than the gauge refreshes does not distort the average. The smoothing 
 whenever the shown state changes: when the direction of the flow flips between draining
 and charging, when a weak source is plugged into a Mac running on battery (the draw
 changes meaning from "whole system" to "what the source does not cover"), and around a
-plug or unplug event. Nothing about the estimate is persisted: it lives for one session
-of the app (the settings are the one thing Restwatt stores, see "What it can do").
+plug or unplug event.
+
+### What Restwatt remembers
+
+The estimate survives a restart of the app. For each of the three flow states that have
+an estimator (draining on battery, draining with a weak source, charging) Restwatt keeps
+the smoothed power, the observation window behind it (and with it the confidence and the
+time constant) and the sample count in its statistics file, together with the wall-clock
+time of the last tick that showed that state. The file is written at most once per tick
+and when the app quits (see "Footprint"). The first time a flow state is shown in a
+session, at launch or later (launch on AC, unplug ten minutes in), the estimator picks up
+where that state left off; later switches within the session start fresh, as described
+above. Whether the remembered state is trusted is decided by one rule, each branch of
+which has a unit test:
+
+- **Direction.** Only the entry of the state now shown is used. A remembered charging
+  estimate is never applied to draining; it stays in the file for the next charge.
+- **Reboot.** The file carries the boot time of the Mac (`kern.boottime`). If the current
+  boot time differs from it by more than a minute, every remembered estimate is
+  discarded: the workload after a reboot is a new one. When the boot time is unknown on
+  either side, the gap alone decides.
+- **Gap.** The pause between the last remembered tick and now (wall clock) is subtracted
+  from the remembered observation window, second for second, starting from at most one
+  hour of observation (beyond an hour the time constant has stopped growing, so more is
+  not worth remembering). A window that ends at zero or below is discarded; a clock that
+  ran backwards discards it too. What remains is the smoothed power with the shortened
+  window, so a lower confidence and a smaller time constant. In the test suite: an hour
+  observed and a 45-minute pause leaves 15 minutes of observation and `medium`
+  confidence; a restart after 3 seconds keeps practically everything; a pause of an hour
+  or more (quit, sleep, reboot) forgets the estimate even after a whole day of
+  observation.
+- **Resume.** The first gauge sample after a resume only sets the current values and the
+  session's time anchor; it does not move the smoothed power, because no in-session
+  interval exists yet. From the second sample on the smoothing continues with the time
+  constant the shortened window implies. Until that first sample the time row reads
+  `waiting for the first gauge reading`, as on a cold start. The `Smoothing` row counts
+  the remembered observation in its minutes; nothing marks it as remembered.
+
+Inside a session Restwatt keeps running on the system uptime clock, which stands still
+during sleep and restarts at boot; only the file carries wall-clock times. Sleep within
+a session is not detected. A missing or unreadable file, or an entry with nonsensical
+values, means a cold start without any error message.
 
 Below a power of 0.1 W no time is shown in either direction. Times above 5999 minutes
 are shown as `> 99 h`.
@@ -348,7 +407,13 @@ as is.
   `unaccounted` remainder make that gap explicit; on the Mac Restwatt was developed
   on, the visible processes accounted for well under a watt of the several watts the
   battery delivered. If no process reported measurable energy over the last interval,
-  the list says so instead of listing anything.
+  the list says so instead of listing anything. The `Today` block sums the same partial
+  picture over the day: every visible name's watts times the interval length, added to
+  that name's total for the current local calendar day (the interval that spans
+  midnight counts to the new day, and a new day starts from zero). The file keeps the
+  20 largest names; whatever falls below is folded into the `Total today` line, so the
+  total stays right while a small process that later grows starts again from zero.
+  Root processes, the GPU and the display are as invisible here as in the live list.
 
 ## Requirements
 
@@ -382,8 +447,17 @@ it to your Login Items in System Settings yourself if you want it at startup.
 
 ## Footprint
 
-Sampling happens on one timer with a fixed interval of 30 seconds; there is no
-background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the assembled
+Sampling happens on one repeating timer with a fixed interval of 30 seconds, plus a
+single one-shot timer that takes a second reading 5 seconds after the launch tick and
+then never fires again; there is no background work between ticks. The one-shot exists
+because the process list needs two readings of the kernel's energy counters: without it
+the list said `collecting the first interval` for a full 30 seconds after every launch,
+now it does so for those few seconds. The one-shot is AppKit code without a unit test;
+in one smoke run the statistics file appeared within 12 seconds of launch and after
+67 seconds had counted 5 + 30 + 30 seconds, so the 30-second pace is unchanged after it.
+The statistics file is written at most once per tick, only when its contents changed, and
+once more when the app quits (usually a no-op, it covers a tick whose write failed); a
+failed write is retried at the next tick and never shown. Measured with `ps -o %cpu,rss,cputime` on the assembled
 0.1.0 bundle running idle on an Apple silicon MacBook while discharging: `%cpu` reported
 0.0 in every 30-second sample over a 6-minute window, the process accumulated about
 0.8 s of CPU time over 70 minutes of running, and resident memory stayed at about
@@ -392,19 +466,34 @@ background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the ass
 ## Privacy
 
 - No network access, no telemetry, no analytics, no crash reporting.
-- The only file Restwatt writes is `~/Library/Application Support/Restwatt/settings.json`,
-  and only when a setting changes. "Nothing is written" holds for the launch path: a
-  launch that touches nothing leaves no file behind. A click does write it, and turning
-  `Stay awake with the lid closed` on writes it before `pmset` runs (the record comes
-  first, see "What it can do"). The file holds the on/off choice of the three
-  `Keep ... awake` toggles and the flag that Restwatt itself turned on `Stay awake with
-  the lid closed`; a missing or unreadable file means everything off. Nothing else is
-  stored: no history, no sync choice, no measurement. Deleting the file resets the
-  settings; do it while `Stay awake with the lid closed` is off. Deleting it while the
-  toggle is on loses the record: the setting stays on the Mac, the next launch treats the
-  `SleepDisabled 1` as set outside Restwatt and takes nothing back, and quitting writes
-  nothing either; turn the toggle off by hand in the menu or run the saver `pmset` calls
-  yourself.
+- Restwatt writes two files, both under `~/Library/Application Support/Restwatt/`.
+- The settings file `~/Library/Application Support/Restwatt/settings.json` is written
+  only when a setting changes: a launch that touches no setting does not create it. A
+  click does write it, and turning `Stay awake with the lid closed` on writes it before
+  `pmset` runs (the record comes first, see "What it can do"). The file holds the on/off
+  choice of the three `Keep ... awake` toggles and the flag that Restwatt itself turned on
+  `Stay awake with the lid closed`; a missing or unreadable file means everything off. No
+  sync choice is stored. Deleting the file resets the settings; do it while `Stay awake
+  with the lid closed` is off. Deleting it while the toggle is on loses the record: the
+  setting stays on the Mac, the next launch treats the `SleepDisabled 1` as set outside
+  Restwatt and takes nothing back, and quitting writes nothing either; turn the toggle
+  off by hand in the menu or run the saver `pmset` calls yourself.
+- The statistics file `~/Library/Application Support/Restwatt/statistics.json` is written
+  from the first tick with a battery reading, at most once per tick and at quit, atomically
+  (see "Footprint"). It is a statistic, not a log: it never grows with time. It contains,
+  as plain JSON with sorted keys, exactly this: for each of the three flow states the
+  smoothed power in watts, the observation window and sample count, and the wall-clock
+  time (unix seconds) of the last tick in that state; for the current local calendar day
+  (`YYYY-MM-DD`) up to 20 process names as `proc_name` reports them (no arguments, no
+  paths, no pids), each with its CPU energy in watt-hours, one figure for the folded-in
+  remainder and the seconds sampled that day; the boot time of the Mac and the time of the
+  write, both as unix seconds; and a format version. Nothing else: no per-sample history,
+  no battery balance, no earlier day. The unit tests pin the exact text of a small
+  document and keep the largest possible one (20 names, three estimator entries, large
+  numbers) under 4096 bytes; the one written in a smoke run was about 1.4 KB. A missing or
+  unreadable file means a start from zero without any message. Deleting it resets the
+  remembered estimate and the day's statistic, nothing else; Restwatt does not read it for
+  anything but its own display. Without a battery reading nothing is recorded or written.
 - Restwatt changes the system only when you click a setting, plus the two safety writes
   described under "What it can do" (the saver profile at quit and at launch, only when
   Restwatt itself had turned the lid-closed setting on). It runs `pmset` as administrator
@@ -438,9 +527,11 @@ VERSION                            the one place the version lives (Semantic Ver
 Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   BatterySnapshot.swift            data model, PowerState from the net flow, reader protocols
   PowerMath.swift                  draw, remaining and missing Wh, dead band, minutes
-  EnergyFlowEstimator.swift        adaptive EWMA and confidence, draining and charging
-  ProcessEnergyRanker.swift        per-process energy deltas, aggregation by name
-  BatteryMonitor.swift             one tick: read, settle, dedupe, estimate, rank; Sampling.interval
+  EnergyFlowEstimator.swift        adaptive EWMA and confidence, draining and charging, resume from Memory
+  ProcessEnergyRanker.swift        per-process energy deltas, aggregation by name, ranked report
+  EnergyStatistics.swift           statistics file model: staleness rule, day statistic, JSON codec, path
+  EnergyMemory.swift               loads the statistics file, resumes and remembers estimators, records the day
+  BatteryMonitor.swift             one tick: read, settle, dedupe, estimate, rank, remember; Sampling constants
   Formatting.swift                 every user-visible string
   PointerRegionTracker.swift       pointer enter/leave transitions for the menu bar item
   DetailRow.swift                  label/value rows for the popover and the menu
@@ -452,7 +543,7 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   SettingsRow.swift                the settings section rows of the click menu
 Sources/RestwattApp/               the menu bar app
   main.swift                       NSApplication bootstrap, accessory activation policy
-  AppDelegate.swift                timer, power-source notification, settings reconcile, wiring
+  AppDelegate.swift                timers, power-source notification, settings reconcile, wall clock, wiring
   StatusItemController.swift       NSStatusItem title, pointer monitor, popover, menu with settings
   DetailPopover.swift              NSPopover with the detail rows in a two-column grid
   IOKitBatteryReader.swift         AppleSmartBattery registry and IOPowerSources
@@ -460,7 +551,9 @@ Sources/RestwattApp/               the menu bar app
   IOKitPowerAssertions.swift       IOPMAssertionCreateWithName and IOPMAssertionRelease
   ProcessCommandRunner.swift       Process with a fixed executable and arguments, no shell
   WorkspaceApplicationController.swift  NSWorkspace launch and NSRunningApplication quit request
-  FileSettingsStore.swift          settings.json under Application Support, atomic writes
+  ApplicationSupportFile.swift     one file under Application Support: read whole, written atomically
+  FileSettingsStore.swift          settings.json through ApplicationSupportFile
+  FileStatisticsStore.swift        statistics.json through ApplicationSupportFile
 Tests/RestwattCoreTests/           XCTest suite; runs without a battery or privileges
 packaging/Info.plist.template      bundle metadata, version filled in from VERSION
 scripts/make-app.sh                assembles and ad-hoc signs dist/Restwatt.app
@@ -478,9 +571,11 @@ swift test
 ```
 
 `RestwattCore` has no AppKit or IOKit import; hardware, process and system access sit
-behind the `BatteryReading`, `ProcessReading`, `ClockReading`, `PowerAssertionHolding`,
-`CommandRunning`, `SettingsStoring` and `ApplicationControlling` protocols with test
-doubles, so the tests run on any Mac and on CI, launch no process and write nothing
+behind the `BatteryReading`, `ProcessReading`, `ClockReading`, `WallClockReading`,
+`PowerAssertionHolding`, `CommandRunning`, `SettingsStoring`, `StatisticsStoring` and
+`ApplicationControlling` protocols with test doubles (the wall clock and boot time as
+`ManualWallClock`, the statistics file as `MemoryStatisticsStore`, the calendar injected
+as a value), so the tests run on any Mac and on CI, launch no process and write nothing
 outside memory. The suite pins the menu bar strings and detail rows of
 every power state (and that the rows carry the same figures as the plain text lines),
 the state decision on the net flow including both edges of the dead band, the settling
@@ -491,11 +586,20 @@ the ranker's handling of pid reuse, the pointer enter/leave transitions behind t
 popover, the settings section (the exact `pmset`, `launchctl`, `sudo` and `osascript`
 argument vectors of the two scripts it replaces, the `pmset -g` and `launchctl print`
 parsers against measured output, the reconcile decisions at launch, quit and click, the
-coordinator against a scripted double of the system, and the menu rows), and a few
-repository invariants: `VERSION` matches the latest CHANGELOG release, this README states
-the sampling interval, names the settings file and quotes every `pmset` call the app can
-run, no source file names a shell or a password-free sudo rule, and no file contains an
-em dash or en dash.
+coordinator against a scripted double of the system, and the menu rows), the statistics
+that survive a restart (every branch of the staleness rule at its edges, a resumed
+estimator not moving on its first sample and smoothing with the remembered window from
+the second, a second launch continuing where the first left off, the first entry into a
+state resuming while later switches restart, the day statistic rolling over at local
+midnight in an injected time zone, eviction to 20 names with the remainder folded into the
+total, the JSON codec's round trip and pinned text with unknown keys ignored and garbage
+meaning a start from zero, the largest document under 4096 bytes, at most one write per
+tick and none without a change, a failed write retried, and the `Today` rows and lines
+with their example figures), and a few repository invariants: `VERSION` matches the
+latest CHANGELOG release, this README states the sampling interval and the second-sample
+delay, names the settings and the statistics file and quotes every `pmset` call the app
+can run, no source file names a shell or a password-free sudo rule, and no file contains
+an em dash or en dash.
 
 CI runs on GitHub Actions (`macos-latest` and `macos-15`, the lower edge for
 `swift-tools-version: 6.0`) on every push and pull request and needs no secrets.

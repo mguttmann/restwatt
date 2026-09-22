@@ -103,6 +103,20 @@ extension Formatting {
         return rows
     }
 
+    /// The day's per-name energy as rows: a heading, `limit` entries, and the total. Same data
+    /// as `todayLines`; empty while nothing of the day is sampled.
+    public static func todayRows(_ statistic: DailyEnergyStatistic?, limit: Int) -> [DetailRow] {
+        guard let statistic else {
+            return []
+        }
+        var rows = [DetailRow(todayHeading, emphasis: .heading)]
+        for entry in statistic.entries.prefix(limit) {
+            rows.append(DetailRow(entry.name, energy(entry.wattHours)))
+        }
+        rows.append(DetailRow(todayTotalLabel, todayTotal(statistic)))
+        return rows
+    }
+
     /// Heading of the process rows; `processListLabel` without the trailing colon.
     public static var processListHeading: String {
         var heading = processListLabel

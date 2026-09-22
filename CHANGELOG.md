@@ -22,8 +22,9 @@ The version lives in the `VERSION` file.
   waits for the next gauge reading, and `No battery`.
 - Hover popover on mouseover (no click needed) with charge level, remaining Wh, current
   draw, time left at current draw, smoothed time left with observation time and
-  confidence, macOS's own estimate, and the top three processes, laid out as label/value
-  rows in the normal label colour with monospaced digits; the current draw and both
+  confidence, macOS's own estimate, the top three processes and a `Today` block with the
+  three largest per-process energy totals of the day plus `Total today`, laid out as
+  label/value rows in the normal label colour with monospaced digits; the current draw and both
   time-left values are emphasised. While charging the rows are `Charging at`, `Time to
   full at current power`, `Time to full, smoothed`, `Smoothing` and `macOS estimate`
   (the gauge's `AvgTimeToFull`); with a weak source a `Power source` row explains that the
@@ -34,24 +35,34 @@ The version lives in the `VERSION` file.
   current frame (`PointerRegionTracker` in `RestwattCore`, unit-tested), because the menu
   bar item is system-hosted and a tracking area on it never fires. The monitor observes the
   pointer position only and stores nothing; it is removed when the app terminates.
-- Click menu with the same rows, the top five processes, the settings section (below),
-  the version and `Quit Restwatt`. Information lines are enabled items without an
+- Click menu with the same rows, the top five processes, the five largest `Today` names
+  with the total, the settings section (below), the version and `Quit Restwatt`. Information lines are enabled items without an
   action, so they are drawn in the normal label colour instead of the disabled grey.
 - Adaptive energy-flow estimator (`EnergyFlowEstimator`) for both directions: time to
   empty from the remaining Wh and the draw, time to full from the missing Wh (full-charge
   minus remaining capacity at the present voltage) and the charging power. Starts from the
   current value and smooths with a time constant that grows with the observation window
   (60 s to 1800 s), with a low, medium or high confidence level. Restarts whenever the
-  shown state changes (direction flip, battery-only to weak source, plug or unplug). The
-  time to full is linear and knows no charge curve; the gauge's own figure stays visible
-  for comparison.
+  shown state changes within a session (direction flip, battery-only to weak source, plug
+  or unplug). The estimate survives a restart of the app: the smoothed power, observation
+  window and sample count of each flow state are remembered in the statistics file and
+  resumed the first time that state is shown in a session, aged by one staleness rule:
+  only the entry of the shown state applies, a reboot (boot time more than a minute off)
+  forgets every entry, the pause since the last remembered tick is subtracted from at
+  most one hour of remembered observation and a window that reaches zero is forgotten,
+  and the first sample after a resume does not move the smoothed power. The time to full
+  is linear and knows no charge curve; the gauge's own figure stays visible for
+  comparison.
 - `Source rating` row with the connected source's rated power from `AdapterDetails.Watts`,
   omitted when no source is connected or the gauge reports no rating. The weak-source,
   slow-charge and near-zero states are covered by synthetic unit-test fixtures only; the
   charging path was verified against a measured 96 W USB-C charger reading.
 - Per-process energy ranking of the user's own processes from the kernel's
   `ri_energy_nj` counter, aggregated by process name and labelled as a partial estimate,
-  with visible total and unaccounted remainder.
+  with visible total and unaccounted remainder. A per-name energy statistic for the
+  current local calendar day (`Today`, watt-hours over every visible name, 20 names kept
+  and the smallest folded into the total, a new day starting from zero) that survives a
+  restart and is shown from the first tick of a later launch.
 - Battery reading from the `AppleSmartBattery` IOKit registry entry, deduplicated by
   gauge `UpdateTime`; immediate re-sample on power source changes. A reading whose
   `ExternalConnected` flag flipped while its `UpdateTime` stayed the same predates the
@@ -61,8 +72,10 @@ The version lives in the `VERSION` file.
   with a new reading is trusted as is). A
   charge percentage outside 0 to 100 is treated as unreadable, because the gauge key
   semantics were only verified on Apple silicon.
-- One 30-second sampling timer; no network. The only file written is the settings file
-  under Application Support, and only when a toggle changes.
+- One 30-second sampling timer plus a one-shot second sample 5 seconds after the launch
+  tick, so the process list appears within seconds instead of after a full interval; no
+  network. Two files under Application Support: the settings file, written only when a
+  toggle changes, and the statistics file, written at most once per tick and at quit.
 - Settings section in the click menu (headings `Power` and `Sync`, checkmark items),
   replacing two hand-run shell scripts. `Keep awake`, `Keep display awake` and
   `Keep disk awake` hold IOKit power assertions (`PreventUserIdleSystemSleep`,
@@ -120,6 +133,16 @@ The version lives in the `VERSION` file.
   awake choices and the "armed by Restwatt" flag, written atomically and only on change; a
   missing or unreadable file means everything off. This deliberately lifts the earlier
   "nothing persisted, no preferences" stance; the README privacy section documents it.
+- Statistics file `~/Library/Application Support/Restwatt/statistics.json`: three
+  estimator entries (smoothed watts, observation window, sample count, wall-clock time of
+  the last tick), the day's per-name energy (at most 20 names, folded remainder, seconds
+  sampled), the Mac's boot time and the write time, and a format version; JSON with sorted
+  keys, atomic, at most one write per tick and only on change, one more at quit, a failed
+  write retried silently. Never a log: the largest possible document is held under
+  4096 bytes by a test. A missing or unreadable file means a start from zero. Timestamps
+  in the file are wall-clock unix seconds; the session itself keeps running on uptime.
+  Behind `StatisticsStoring` and `WallClockReading` (`Date` plus `kern.boottime`) with
+  test doubles, the calendar injected; `RestwattCore` stays free of AppKit and IOKit.
 - `RestwattCore` additions behind protocols with test doubles: settings model, fixed
   argument vectors for `pmset`, `launchctl`, `sudo` and `osascript`, parsers for `pmset -g`
   and `launchctl print`, reconcile decisions and coordinator. The tests pin the exact
@@ -128,7 +151,8 @@ The version lives in the `VERSION` file.
   refused IOKit power assertion is reported with its `IOReturn` as unsigned hex
   (`e00002bc`), not as a negative number.
 - `RestwattCore` library with hardware-free unit tests, including repository consistency
-  checks (version, sampling interval in the README, no em or en dashes).
+  checks (version, sampling interval and second-sample delay in the README, the settings
+  and statistics file paths named in the README, no em or en dashes).
 - `make app` and `scripts/make-app.sh` assembling an ad-hoc signed `dist/Restwatt.app`
   from the SwiftPM release product, version taken from `VERSION`.
 - GitHub Actions CI on `macos-latest` and `macos-15`: `swift build`, `swift test`,

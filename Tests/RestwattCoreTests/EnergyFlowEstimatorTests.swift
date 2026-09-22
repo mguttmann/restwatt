@@ -130,6 +130,63 @@ final class EnergyFlowEstimatorTests: XCTestCase {
         XCTAssertEqual(old.smoothedMinutes, 23)
     }
 
+    // MARK: Resuming an earlier session
+
+    private let remembered = EnergyFlowEstimator.Memory(smoothedWatts: 7.5, observedSeconds: 2400, sampleCount: 40)
+
+    func testResumedEstimatorHasNoEstimateBeforeTheFirstSample() {
+        let estimator = EnergyFlowEstimator(resuming: remembered)
+        XCTAssertNil(estimator.estimate)
+        XCTAssertEqual(estimator.memory, remembered, "the memory itself is there from the start")
+    }
+
+    func testFirstSampleAfterResumeKeepsTheSmoothedPower() {
+        var estimator = EnergyFlowEstimator(resuming: remembered)
+        estimator.add(time: 0, energyWattHours: remainingWh, watts: 9.0)
+        let estimate = estimator.estimate!
+        XCTAssertEqual(estimate.smoothedWatts, 7.5, "no in-session dt yet, so the smoothed power does not move")
+        XCTAssertEqual(estimate.instantWatts, 9.0)
+        XCTAssertEqual(estimate.observedSeconds, 2400)
+        XCTAssertEqual(estimate.sampleCount, 41)
+        XCTAssertEqual(estimate.confidence, .high)
+        XCTAssertEqual(estimate.instantMinutes, 420)
+        XCTAssertEqual(estimate.smoothedMinutes, 504)
+    }
+
+    func testSecondSampleAfterResumeSmoothsWithTheRememberedWindow() {
+        var long = EnergyFlowEstimator(resuming: EnergyFlowEstimator.Memory(
+            smoothedWatts: 7, observedSeconds: 3600, sampleCount: 60))
+        long.add(time: 0, energyWattHours: remainingWh, watts: 7)
+        long.add(time: 60, energyWattHours: remainingWh, watts: 21)
+        let longRise = long.estimate!.smoothedWatts / 7 - 1
+
+        var short = EnergyFlowEstimator(resuming: EnergyFlowEstimator.Memory(
+            smoothedWatts: 7, observedSeconds: 60, sampleCount: 2))
+        short.add(time: 0, energyWattHours: remainingWh, watts: 7)
+        short.add(time: 60, energyWattHours: remainingWh, watts: 21)
+        let shortRise = short.estimate!.smoothedWatts / 7 - 1
+
+        XCTAssertLessThan(longRise, 0.10, "an hour of remembered observation damps the outlier")
+        XCTAssertGreaterThan(shortRise, 0.40, "a minute of remembered observation barely does")
+        XCTAssertEqual(long.estimate?.observedSeconds, 3660)
+        XCTAssertEqual(short.estimate?.observedSeconds, 120)
+    }
+
+    func testMemoryRoundTrip() {
+        XCTAssertNil(EnergyFlowEstimator().memory)
+        var estimator = EnergyFlowEstimator()
+        _ = feed(&estimator, from: 0, count: 10, watts: 7)
+        let memory = estimator.memory!
+        XCTAssertEqual(memory, EnergyFlowEstimator.Memory(smoothedWatts: 7, observedSeconds: 540, sampleCount: 10))
+        XCTAssertEqual(EnergyFlowEstimator(resuming: memory).memory, memory)
+    }
+
+    func testMaximumRememberedObservationIsWhereTauStopsGrowing() {
+        XCTAssertEqual(EnergyFlowEstimator.maximumRememberedObservation,
+                       EnergyFlowEstimator.tauMax * EnergyFlowEstimator.rampDivisor)
+        XCTAssertEqual(EnergyFlowEstimator.maximumRememberedObservation, 3600, "the hour the README names")
+    }
+
     func testResetForgetsEverything() {
         var estimator = EnergyFlowEstimator()
         _ = feed(&estimator, from: 0, count: 10, watts: 7)

@@ -4,6 +4,10 @@ import Foundation
 public enum Formatting {
     /// Label that marks the process list as the partial estimate it is.
     public static let processListLabel = "Top processes (your processes, CPU energy only, estimate):"
+    /// Heading of the day's per-name energy; the same caveats as the live list.
+    public static let todayHeading = "Today (your processes, CPU energy only, estimate)"
+    /// Label of the day's total line.
+    static let todayTotalLabel = "Total today"
 
     /// `h:mm`, or "> 99 h" at the estimator cap.
     public static func durationString(minutes: Int) -> String {
@@ -20,6 +24,21 @@ public enum Formatting {
 
     static func wattsFine(_ value: Double) -> String {
         String(format: "%.2f W", value)
+    }
+
+    /// Energy as whole milliwatt-hours below one watt-hour, `x.xx Wh` from there.
+    static func energy(_ wattHours: Double) -> String {
+        let milliWattHours = (wattHours * 1000).rounded()
+        if milliWattHours < 1000 {
+            return "\(Int(milliWattHours)) mWh"
+        }
+        return String(format: "%.2f Wh", wattHours)
+    }
+
+    /// Value of the day's total line: the energy and how long was sampled.
+    static func todayTotal(_ statistic: DailyEnergyStatistic) -> String {
+        let minutes = Int((statistic.sampledSeconds / 60).rounded())
+        return "\(energy(statistic.totalWattHours)) over \(durationString(minutes: minutes)) sampled"
     }
 
     /// The text in the menu bar.
@@ -146,12 +165,27 @@ public enum Formatting {
         return lines
     }
 
+    /// The day's per-name energy, `limit` entries plus the total, indented by two spaces;
+    /// empty while nothing of the day is sampled.
+    public static func todayLines(_ statistic: DailyEnergyStatistic?, limit: Int) -> [String] {
+        guard let statistic else {
+            return []
+        }
+        var lines = [todayHeading]
+        for entry in statistic.entries.prefix(limit) {
+            lines.append("  \(entry.name)  \(energy(entry.wattHours))")
+        }
+        lines.append("  \(todayTotalLabel) \(todayTotal(statistic))")
+        return lines
+    }
+
     /// Multi-line plain-text form of the details (the former tooltip text). Kept as the
     /// reference wording for `detailRows`; not shown by the app itself.
     public static func tooltipText(_ model: DisplayModel) -> String {
         var lines = ["Restwatt"] + summaryLines(model)
         if case .battery(let status) = model {
             lines += processLines(status.processReport, limit: 3)
+            lines += todayLines(status.today, limit: 3)
         }
         return lines.joined(separator: "\n")
     }
@@ -161,6 +195,7 @@ public enum Formatting {
         var lines = summaryLines(model)
         if case .battery(let status) = model {
             lines += processLines(status.processReport, limit: 5)
+            lines += todayLines(status.today, limit: 5)
         }
         lines.append("Restwatt \(version)")
         return lines

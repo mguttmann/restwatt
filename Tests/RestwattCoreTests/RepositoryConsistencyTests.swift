@@ -48,6 +48,26 @@ final class RepositoryConsistencyTests: XCTestCase {
                       "README must name the settings file \(SettingsStoreLocation.documentedPath)")
     }
 
+    /// The README names the statistics file, and the path it names is the one the code uses.
+    func testReadmeNamesTheStatisticsFile() throws {
+        let readme = try read("README.md")
+        XCTAssertTrue(readme.contains(StatisticsStoreLocation.documentedPath),
+                      "README must name the statistics file \(StatisticsStoreLocation.documentedPath)")
+        XCTAssertEqual(StatisticsStoreLocation.directoryName, SettingsStoreLocation.directoryName)
+        XCTAssertTrue(StatisticsStoreLocation.documentedPath.hasSuffix(
+            "/\(StatisticsStoreLocation.directoryName)/\(StatisticsStoreLocation.fileName)"))
+    }
+
+    /// The one-shot second sample is documented with its delay and comes before the first
+    /// regular tick.
+    func testReadmeNamesTheSecondSampleDelay() throws {
+        XCTAssertLessThan(Sampling.secondSampleDelay, Sampling.interval)
+        let readme = try read("README.md")
+        let seconds = Int(Sampling.secondSampleDelay)
+        XCTAssertTrue(readme.contains("\(seconds) seconds"),
+                      "README must state the second sample delay of \(seconds) seconds")
+    }
+
     /// The pmset values in the README are held by the vector test: every call of both
     /// profiles appears verbatim (without the `/usr/bin/` prefix and without sudo) in the docs.
     func testReadmeQuotesBothPmsetProfiles() throws {

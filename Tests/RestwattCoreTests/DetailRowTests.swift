@@ -172,6 +172,30 @@ final class DetailRowTests: XCTestCase {
         XCTAssertEqual(rows.last, DetailRow("Visible total", "0.00 W over 0 processes"))
     }
 
+    func testTodayRows() {
+        XCTAssertEqual(Formatting.todayRows(Fixtures.todayStatistic, limit: 3), [
+            DetailRow("Today (your processes, CPU energy only, estimate)", emphasis: .heading),
+            DetailRow("Discord Helper (Renderer)", "1.02 Wh"),
+            DetailRow("node", "310 mWh"),
+            DetailRow("Restwatt", "12 mWh"),
+            DetailRow("Total today", "1.74 Wh over 4:12 sampled"),
+        ])
+        XCTAssertEqual(Formatting.todayRows(Fixtures.todayStatistic, limit: 2).map(\.label),
+                       [Formatting.todayHeading, "Discord Helper (Renderer)", "node", "Total today"])
+        XCTAssertEqual(Formatting.todayRows(nil, limit: 3), [], "no section before the first sampled interval of the day")
+    }
+
+    func testTodayRowsCarryTheSameFiguresAsTheTodayLines() {
+        let lines = Formatting.todayLines(Fixtures.todayStatistic, limit: 3)
+        let rows = Formatting.todayRows(Fixtures.todayStatistic, limit: 3)
+        XCTAssertEqual(lines.count, rows.count)
+        XCTAssertEqual(lines.first, rows.first?.label)
+        for (line, row) in zip(lines.dropFirst(), rows.dropFirst()) {
+            XCTAssertTrue(line.hasPrefix("  \(row.label)"), "\(line) does not start with \(row.label)")
+            XCTAssertTrue(line.hasSuffix(row.value), "\(line) does not end with \(row.value)")
+        }
+    }
+
     func testRowsCarryTheSameFiguresAsTheStringLines() {
         // The string functions are pinned elsewhere; the rows must not drift from them.
         for model in [discharging(estimate: estimate), discharging(estimate: nil),
@@ -190,7 +214,8 @@ final class DetailRowTests: XCTestCase {
     func testNoDashesInRows() {
         for model in [discharging(estimate: estimate), weakSource(estimate: weakEstimate),
                       charging(estimate: chargeEstimate, gaugeMinutes: nil), onAC(fullyCharged: true), sourceChanging] {
-            let text = (Formatting.detailRows(model) + Formatting.processRows(report, limit: 5))
+            let text = (Formatting.detailRows(model) + Formatting.processRows(report, limit: 5)
+                + Formatting.todayRows(Fixtures.todayStatistic, limit: 5))
                 .map { $0.label + $0.value }.joined()
             XCTAssertFalse(text.contains("\u{2013}"), "en dash in \(text)")
             XCTAssertFalse(text.contains("\u{2014}"), "em dash in \(text)")

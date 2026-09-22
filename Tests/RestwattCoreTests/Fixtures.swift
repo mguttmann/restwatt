@@ -111,6 +111,75 @@ enum Fixtures {
         ProcessEnergySample(
             pid: pid, name: name, energyNanoJoules: UInt64(joules * 1e9), cpuTimeSeconds: cpuSeconds)
     }
+
+    // MARK: Statistics
+
+    /// The machine's zone (measured 2026-09-22) and UTC, so day rollover tests prove the
+    /// calendar is injected rather than taken from the process.
+    static let newYork: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        return calendar
+    }()
+
+    static let utc: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }()
+
+    /// Wall-clock instant most statistics tests run at: 2026-09-22 08:00:00 UTC, which is
+    /// 04:00 in New York, the same calendar day in both zones.
+    static let wallNow = Date(timeIntervalSince1970: 1_790_064_000)
+    /// A boot about 18 hours before `wallNow`.
+    static let bootTime = Date(timeIntervalSince1970: 1_789_998_856)
+
+    /// A day of sampling: three names, some evicted energy, 4:12 h sampled, 1.742 Wh total.
+    static let todayStatistic = DailyEnergyStatistic(
+        day: "2026-09-22",
+        entries: [
+            DailyEnergyEntry(name: "Discord Helper (Renderer)", wattHours: 1.02),
+            DailyEnergyEntry(name: "node", wattHours: 0.31),
+            DailyEnergyEntry(name: "Restwatt", wattHours: 0.012),
+        ],
+        otherWattHours: 0.4,
+        sampledSeconds: 15120)
+}
+
+final class ManualWallClock: WallClockReading {
+    var now: Date
+    var bootTime: Date?
+
+    init(now: Date = Fixtures.wallNow, bootTime: Date? = Fixtures.bootTime) {
+        self.now = now
+        self.bootTime = bootTime
+    }
+
+    func advance(by seconds: TimeInterval) {
+        now = now.addingTimeInterval(seconds)
+    }
+}
+
+final class MemoryStatisticsStore: StatisticsStoring {
+    var stored: StoredStatistics?
+    var saveError: String?
+    var saveCount = 0
+
+    init(_ stored: StoredStatistics? = nil) {
+        self.stored = stored
+    }
+
+    func load() -> StoredStatistics {
+        stored ?? StoredStatistics()
+    }
+
+    func save(_ statistics: StoredStatistics) throws {
+        saveCount += 1
+        if let saveError {
+            throw SettingsFailure(saveError)
+        }
+        stored = statistics
+    }
 }
 
 final class ManualClock: ClockReading {

@@ -51,6 +51,35 @@ public struct ProcessEnergyReport: Equatable, Sendable {
         entries: [], visibleTotalWatts: 0, processCount: 0, unaccountedWatts: nil, isWarmingUp: true)
 }
 
+/// Every name with a valid delta over one interval, before any limit is applied. The report
+/// shows the top of it; the daily statistic counts all of it.
+public struct ProcessEnergyAggregation: Equatable, Sendable {
+    /// Sorted by watts, descending, ties by name.
+    public var entries: [ProcessEnergyEntry]
+    /// Number of pids that contributed a valid delta.
+    public var processCount: Int
+    /// Sum over all entries.
+    public var totalWatts: Double
+
+    public init(entries: [ProcessEnergyEntry], processCount: Int, totalWatts: Double) {
+        self.entries = entries
+        self.processCount = processCount
+        self.totalWatts = totalWatts
+    }
+
+    /// The report of this interval: the top `limit` names plus the totals.
+    public func report(drawWatts: Double, batteryIsOnlySource: Bool,
+                       limit: Int = ProcessEnergyRanker.defaultLimit) -> ProcessEnergyReport {
+        ProcessEnergyReport(
+            entries: Array(entries.prefix(limit)),
+            visibleTotalWatts: totalWatts,
+            processCount: processCount,
+            unaccountedWatts: batteryIsOnlySource ? max(0, drawWatts - totalWatts) : nil,
+            isWarmingUp: false
+        )
+    }
+}
+
 public enum ProcessEnergyRanker {
     /// Default number of entries kept in a report.
     public static let defaultLimit = 5
@@ -67,8 +96,20 @@ public enum ProcessEnergyRanker {
         batteryIsOnlySource: Bool,
         limit: Int = defaultLimit
     ) -> ProcessEnergyReport {
-        guard dt > 0, !previous.isEmpty else {
+        guard let aggregation = aggregate(previous: previous, current: current, dt: dt) else {
             return .warmingUp
+        }
+        return aggregation.report(drawWatts: drawWatts, batteryIsOnlySource: batteryIsOnlySource, limit: limit)
+    }
+
+    /// All names with a valid delta, or nil while there is no previous reading yet.
+    public static func aggregate(
+        previous: [ProcessEnergySample],
+        current: [ProcessEnergySample],
+        dt: TimeInterval
+    ) -> ProcessEnergyAggregation? {
+        guard dt > 0, !previous.isEmpty else {
+            return nil
         }
         var previousByPid: [Int32: ProcessEnergySample] = [:]
         for sample in previous {
@@ -104,12 +145,6 @@ public enum ProcessEnergyRanker {
             }
             return lhs.name < rhs.name
         }
-        return ProcessEnergyReport(
-            entries: Array(sorted.prefix(limit)),
-            visibleTotalWatts: total,
-            processCount: processCount,
-            unaccountedWatts: batteryIsOnlySource ? max(0, drawWatts - total) : nil,
-            isWarmingUp: false
-        )
+        return ProcessEnergyAggregation(entries: sorted, processCount: processCount, totalWatts: total)
     }
 }

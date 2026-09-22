@@ -4,18 +4,14 @@ import RestwattCore
 /// The settings file under `~/Library/Application Support/Restwatt/`. Missing or unreadable
 /// means defaults; writes are atomic and only happen when the coordinator has a change.
 struct FileSettingsStore: SettingsStoring {
-    private let fileURL: URL
+    private let file: ApplicationSupportFile
 
     init(fileManager: FileManager = .default) {
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        fileURL = base
-            .appendingPathComponent(SettingsStoreLocation.directoryName, isDirectory: true)
-            .appendingPathComponent(SettingsStoreLocation.fileName)
+        file = ApplicationSupportFile(fileName: SettingsStoreLocation.fileName, fileManager: fileManager)
     }
 
     func load() -> StoredSettings {
-        guard let data = try? Data(contentsOf: fileURL) else {
+        guard let data = file.read() else {
             return StoredSettings()
         }
         return SettingsCodec.decode(data)
@@ -23,9 +19,7 @@ struct FileSettingsStore: SettingsStoring {
 
     func save(_ settings: StoredSettings) throws {
         do {
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try SettingsCodec.encode(settings).write(to: fileURL, options: .atomic)
+            try file.write(SettingsCodec.encode(settings))
         } catch {
             throw SettingsFailure(error.localizedDescription)
         }

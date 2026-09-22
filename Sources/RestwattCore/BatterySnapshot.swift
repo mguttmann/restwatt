@@ -114,6 +114,18 @@ public enum PowerState: Equatable, Sendable {
     public var isOnBatteryOnly: Bool {
         self == .discharging
     }
+
+    /// Key under which the estimator of this state is remembered between sessions; nil for the
+    /// states without an estimator. Each flow state has its own memory because the watts mean
+    /// something different in each (whole system draw, source shortfall, charging power).
+    public var memoryKey: String? {
+        switch self {
+        case .discharging: return "discharging"
+        case .drainingOnExternalPower: return "drainingOnExternalPower"
+        case .charging: return "charging"
+        case .onExternalPower, .powerSourceChanging: return nil
+        }
+    }
 }
 
 /// Cumulative per-process counters from `proc_pid_rusage` (RUSAGE_INFO_V6).
@@ -153,4 +165,13 @@ public protocol ProcessReading {
 public protocol ClockReading {
     /// Seconds since an arbitrary fixed reference; only differences are used.
     var now: TimeInterval { get }
+}
+
+/// The wall clock, used only for values that leave the process (the statistics file). The
+/// session itself keeps running on `ClockReading`, which stands still during sleep and
+/// restarts at boot.
+public protocol WallClockReading {
+    var now: Date { get }
+    /// Wall-clock time of the last boot, nil when the system does not report it.
+    var bootTime: Date? { get }
 }

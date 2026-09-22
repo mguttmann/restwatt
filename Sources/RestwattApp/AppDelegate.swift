@@ -8,13 +8,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitor: BatteryMonitor?
     private var settings: SettingsCoordinator?
     private var timer: Timer?
+    private var secondSampleTimer: Timer?
     private var powerSourceRunLoopSource: CFRunLoopSource?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let monitor = BatteryMonitor(
             battery: IOKitBatteryReader(),
             processes: LibprocProcessReader(),
-            clock: SystemClock()
+            clock: SystemClock(),
+            memory: EnergyMemory(store: FileStatisticsStore(), wallClock: SystemWallClock(), calendar: .current)
         )
         self.monitor = monitor
 
@@ -46,13 +48,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         installPowerSourceNotification()
         sample()
+
+        // One early second tick, so the process list (which needs two readings) shows up
+        // within seconds instead of after a full interval. Fires once, then the timer above
+        // sets the pace.
+        secondSampleTimer = Timer.scheduledTimer(
+            timeInterval: Sampling.secondSampleDelay,
+            target: self,
+            selector: #selector(timerFired),
+            userInfo: nil,
+            repeats: false
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         // First: take back the lid-closed pmset profile if Restwatt set it. The assertions
-        // need nothing, the process ending releases them.
+        // need nothing, the process ending releases them. Then write the statistics one last
+        // time.
         settings?.willTerminate()
+        monitor?.willTerminate()
         timer?.invalidate()
+        secondSampleTimer?.invalidate()
         statusItem?.stopObservingPointer()
         if let source = powerSourceRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
@@ -93,5 +109,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SystemClock: ClockReading {
     var now: TimeInterval {
         ProcessInfo.processInfo.systemUptime
+    }
+}
+
+/// Wall clock plus the kernel's boot time (`kern.boottime`), which unlike
+/// `Date() - systemUptime` does not drift with every sleep.
+struct SystemWallClock: WallClockReading {
+    var now: Date {
+        Date()
+    }
+
+    var bootTime: Date? {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &boot, &size, nil, 0) == 0, boot.tv_sec > 0 else {
+            return nil
+        }
+        return Date(timeIntervalSince1970: TimeInterval(boot.tv_sec) + TimeInterval(boot.tv_usec) / 1_000_000)
     }
 }

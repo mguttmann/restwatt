@@ -160,7 +160,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
         if case .battery(let status) = latestModel {
             menu.addItem(.separator())
-            for row in Formatting.processRows(status.processReport, limit: 5) {
+            for row in Formatting.processRows(status.processReport, limit: 5)
+                + Formatting.todayRows(status.today, limit: 5) {
                 let item = Self.menuItem(for: row)
                 item.indentationLevel = row.emphasis == .heading ? 0 : 1
                 menu.addItem(item)
