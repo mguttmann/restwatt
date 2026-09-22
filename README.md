@@ -320,14 +320,24 @@ time of the last tick that showed that state. The file is written at most once p
 and when the app quits (see "Footprint"). The first time a flow state is shown in a
 session, at launch or later (launch on AC, unplug ten minutes in), the estimator picks up
 where that state left off; later switches within the session start fresh, as described
-above. Whether the remembered state is trusted is decided by one rule, each branch of
-which has a unit test:
+above. A fresh start does not erase the file, though: the remembered entry of a state is
+kept as long as resuming it right now would give a longer observation window than the
+fresh estimator carries, and the fresh estimator is written once its window is the
+longer. Plugging in for a minute and unplugging again therefore restarts the smoothing
+on screen, while the hour of observation stays in the file (and keeps ageing by the gap
+rule below) until the new run has observed more; in the test suite the remembered hour
+survives a two-minute flip and hands over after 30 minutes of fresh observation. Whether
+the remembered state is trusted is decided by one rule, each branch of which has a unit
+test:
 
 - **Direction.** Only the entry of the state now shown is used. A remembered charging
   estimate is never applied to draining; it stays in the file for the next charge.
 - **Reboot.** The file carries the boot time of the Mac (`kern.boottime`). If the current
   boot time differs from it by more than a minute, every remembered estimate is
-  discarded: the workload after a reboot is a new one. When the boot time is unknown on
+  discarded when the file is loaded, whichever state is shown: the workload after a
+  reboot is a new one, and the first write of the new session no longer carries the
+  entries of the old boot (a unit test loads two remembered states across a simulated
+  reboot and finds neither in the rewritten file). When the boot time is unknown on
   either side, the gap alone decides.
 - **Gap.** The pause between the last remembered tick and now (wall clock) is subtracted
   from the remembered observation window, second for second, starting from at most one
@@ -345,6 +355,16 @@ which has a unit test:
   constant the shortened window implies. Until that first sample the time row reads
   `waiting for the first gauge reading`, as on a cold start. The `Smoothing` row counts
   the remembered observation in its minutes; nothing marks it as remembered.
+- **Plausibility.** Only figures that could be measurements are read back. An entry is
+  dropped when a figure is not a number, negative or beyond a generous physical ceiling
+  (1000 W smoothed power, a year of observation and one sample per second over that
+  year for an estimator entry; 24000 Wh per figure and a week of sampled seconds for the
+  day's statistic), and so is an entry under a flow state Restwatt does not know. The
+  day is dropped as a whole when its key is not of the `YYYY-MM-DD` shape or its own
+  totals are absurd; a single absurd name is dropped alone. The ceilings and the drop
+  rules are held by unit tests, and a test drives absurd values (negative, far beyond
+  the ceilings, not a number, infinite) through every popover, menu and tooltip line to
+  make sure nothing traps: what is not a measurement is shown as zero.
 
 Inside a session Restwatt keeps running on the system uptime clock, which stands still
 during sleep and restarts at boot; only the file carries wall-clock times. Sleep within
@@ -479,8 +499,11 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
   Restwatt and takes nothing back, and quitting writes nothing either; turn the toggle
   off by hand in the menu or run the saver `pmset` calls yourself.
 - The statistics file `~/Library/Application Support/Restwatt/statistics.json` is written
-  from the first tick with a battery reading, at most once per tick and at quit, atomically
-  (see "Footprint"). It is a statistic, not a log: it never grows with time. It contains,
+  from the first tick that has something to remember (an estimate, a completed process
+  interval, which the second sample 5 seconds after launch delivers, or a file that
+  loading already changed, as after a reboot), at most once per tick and at quit,
+  atomically (see "Footprint"). On AC inside the dead band
+  there is no estimate, so the launch tick alone does not create the file. It is a statistic, not a log: it never grows with time. It contains,
   as plain JSON with sorted keys, exactly this: for each of the three flow states the
   smoothed power in watts, the observation window and sample count, and the wall-clock
   time (unix seconds) of the last tick in that state; for the current local calendar day
@@ -491,7 +514,12 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
   no battery balance, no earlier day. The unit tests pin the exact text of a small
   document and keep the largest possible one (20 names, three estimator entries, large
   numbers) under 4096 bytes; the one written in a smoke run was about 1.4 KB. A missing or
-  unreadable file means a start from zero without any message. Deleting it resets the
+  unreadable file means a start from zero without any message; a file that is valid JSON
+  but carries absurd figures loses those entries only (see "What Restwatt remembers"),
+  and a file with more than 20 names is folded to 20 on reading, the smallest into the
+  remainder, exactly as a tick folds them. A file whose format version is newer than the
+  one this Restwatt writes is read as empty and never written: the session keeps its
+  statistic in memory, and the newer file is left for the newer Restwatt. Deleting it resets the
   remembered estimate and the day's statistic, nothing else; Restwatt does not read it for
   anything but its own display. Without a battery reading nothing is recorded or written.
 - Restwatt changes the system only when you click a setting, plus the two safety writes

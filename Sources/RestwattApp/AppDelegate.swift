@@ -51,14 +51,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // One early second tick, so the process list (which needs two readings) shows up
         // within seconds instead of after a full interval. Fires once, then the timer above
-        // sets the pace.
-        secondSampleTimer = Timer.scheduledTimer(
+        // sets the pace. Same run-loop mode as the main timer, so an open menu in the first
+        // seconds does not hold it back.
+        let secondSampleTimer = Timer(
             timeInterval: Sampling.secondSampleDelay,
             target: self,
             selector: #selector(timerFired),
             userInfo: nil,
             repeats: false
         )
+        RunLoop.main.add(secondSampleTimer, forMode: .common)
+        self.secondSampleTimer = secondSampleTimer
     }
 
     func applicationWillTerminate(_ notification: Notification) {

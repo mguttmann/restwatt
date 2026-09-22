@@ -83,6 +83,82 @@ final class EnergyMemoryTests: XCTestCase {
         XCTAssertEqual(status(monitor.tick()).estimate?.sampleCount, 1, "the pre-reboot charging entry is not resumed either")
     }
 
+    /// Two flow states were remembered before a reboot; the first session after it shows only
+    /// one of them. The other one must not survive in the file under the new boot time, or a
+    /// later session of the same boot would trust an entry that predates the reboot.
+    func testRebootDropsEveryStoredEstimatorBeforeTheFirstWrite() {
+        let preReboot = stored(
+            ["discharging": draining(gap: 120), "charging": draining(gap: 120)],
+            bootTime: Fixtures.bootTime.addingTimeInterval(-3600), today: Fixtures.todayStatistic)
+        let store = MemoryStatisticsStore(preReboot)
+        let monitor = BatteryMonitor(battery: FakeBattery(Fixtures.discharging7W), processes: FakeProcesses(),
+                                     clock: ManualClock(), memory: memory(nil, store: store))
+        XCTAssertEqual(status(monitor.tick()).estimate?.sampleCount, 1)
+        XCTAssertEqual(store.saveCount, 1)
+        XCTAssertEqual(store.stored?.bootTime, Fixtures.bootTime.timeIntervalSince1970)
+        XCTAssertNil(store.stored?.estimators["charging"], "the state not shown in this session is gone from the file too")
+        XCTAssertEqual(store.stored?.estimators["discharging"]?.sampleCount, 1, "only this session's own entry is written")
+        XCTAssertEqual(store.stored?.today, Fixtures.todayStatistic, "the day's energy is real either way")
+
+        // A later session of the same boot finds nothing to resume for charging.
+        let later = BatteryMonitor(battery: FakeBattery(Fixtures.charging), processes: FakeProcesses(),
+                                   clock: ManualClock(), memory: memory(nil, store: store))
+        XCTAssertEqual(status(later.tick()).estimate?.sampleCount, 1)
+
+        // Without a boot time on either side the gap alone decides, as before.
+        let unknownBoot = MemoryStatisticsStore(stored(["charging": draining(gap: 120)], bootTime: nil))
+        let unknownMonitor = BatteryMonitor(battery: FakeBattery(Fixtures.discharging7W), processes: FakeProcesses(),
+                                            clock: ManualClock(), memory: memory(nil, store: unknownBoot))
+        _ = unknownMonitor.tick()
+        XCTAssertNotNil(unknownBoot.stored?.estimators["charging"], "no reboot can be told, so the entry stays")
+    }
+
+    /// A short flip within the session (plug in for a minute, unplug) restarts the estimator.
+    /// The file keeps the remembered entry while its resumable window is the longer one and
+    /// hands over to the fresh estimator once that has observed more.
+    func testAShortFlipDoesNotEraseTheRememberedWindow() {
+        let remembered = draining(gap: 60)
+        let store = MemoryStatisticsStore(stored(["discharging": remembered]))
+        let battery = FakeBattery(Fixtures.discharging7W)
+        let clock = ManualClock()
+        let wallClock = ManualWallClock()
+        let monitor = BatteryMonitor(battery: battery, processes: FakeProcesses(), clock: clock,
+                                     memory: memory(nil, store: store, wallClock: wallClock))
+        XCTAssertEqual(status(monitor.tick()).estimate?.observedSeconds, 3540, "resumed with the minute of pause taken off")
+        XCTAssertEqual(store.stored?.estimators["discharging"]?.observedSeconds, 3540, "the resumed estimator is remembered as before")
+        XCTAssertEqual(store.stored?.estimators["discharging"]?.sampleCount, 41)
+
+        func advance(_ seconds: TimeInterval, to snapshot: BatterySnapshot) -> BatteryStatus {
+            clock.advance(by: seconds)
+            wallClock.advance(by: seconds)
+            var next = snapshot
+            next.updateTime = Int(clock.now)
+            battery.result = .success(next)
+            return status(monitor.tick())
+        }
+
+        _ = advance(60, to: Fixtures.charging)
+        let fresh = advance(60, to: Fixtures.discharging7W)
+        XCTAssertEqual(fresh.estimate?.sampleCount, 1, "the switch back within the session starts the estimator fresh")
+        XCTAssertEqual(fresh.estimate?.observedSeconds, 0)
+        let kept = store.stored?.estimators["discharging"]
+        XCTAssertEqual(kept?.sampleCount, 41, "the file keeps the hour of remembered observation")
+        XCTAssertEqual(kept?.observedSeconds, 3540)
+        XCTAssertEqual(kept?.lastSampleAt, wallNow, "and its own time stamp, so the gap keeps eating it")
+
+        // Half an hour on, the fresh estimator's window is the longer: 1800 observed against
+        // 3540 remembered minus 1920 of gap, and it takes over.
+        var last = fresh
+        for _ in 1...60 {
+            last = advance(30, to: Fixtures.discharging7W)
+        }
+        XCTAssertEqual(last.estimate?.observedSeconds, 1800)
+        XCTAssertEqual(last.estimate?.sampleCount, 61)
+        XCTAssertEqual(store.stored?.estimators["discharging"]?.sampleCount, 61, "the fresh estimator is remembered once it has observed more")
+        XCTAssertEqual(store.stored?.estimators["discharging"]?.observedSeconds, 1800)
+        XCTAssertEqual(store.stored?.estimators["discharging"]?.lastSampleAt, wallNow + 120 + 1800)
+    }
+
     func testChargingMemoryIsNotUsedWhileDraining() {
         let chargingEntry = draining(gap: 0)
         let store = MemoryStatisticsStore(stored(["charging": chargingEntry]))

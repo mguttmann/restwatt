@@ -126,6 +126,15 @@ public enum PowerState: Equatable, Sendable {
         case .onExternalPower, .powerSourceChanging: return nil
         }
     }
+
+    /// Every key a state can be remembered under; the codec drops anything else.
+    public static let memoryKeys: Set<String> = [
+        PowerState.discharging, .drainingOnExternalPower, .charging,
+    ].reduce(into: []) { keys, state in
+        if let key = state.memoryKey {
+            keys.insert(key)
+        }
+    }
 }
 
 /// Cumulative per-process counters from `proc_pid_rusage` (RUSAGE_INFO_V6).

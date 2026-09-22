@@ -48,10 +48,14 @@ The version lives in the `VERSION` file.
   window and sample count of each flow state are remembered in the statistics file and
   resumed the first time that state is shown in a session, aged by one staleness rule:
   only the entry of the shown state applies, a reboot (boot time more than a minute off)
-  forgets every entry, the pause since the last remembered tick is subtracted from at
+  forgets every entry when the file is loaded, so the first write of the new session
+  carries none of them, the pause since the last remembered tick is subtracted from at
   most one hour of remembered observation and a window that reaches zero is forgotten,
-  and the first sample after a resume does not move the smoothed power. The time to full
-  is linear and knows no charge curve; the gauge's own figure stays visible for
+  and the first sample after a resume does not move the smoothed power. A later switch
+  within the session restarts the estimator but keeps the remembered entry in the file
+  until the fresh estimator has observed longer than a resume of the remembered one
+  would still give, so a short flip does not erase an hour of observation. The time to
+  full is linear and knows no charge curve; the gauge's own figure stays visible for
   comparison.
 - `Source rating` row with the connected source's rated power from `AdapterDetails.Watts`,
   omitted when no source is connected or the gauge reports no rating. The weak-source,
@@ -73,9 +77,10 @@ The version lives in the `VERSION` file.
   charge percentage outside 0 to 100 is treated as unreadable, because the gauge key
   semantics were only verified on Apple silicon.
 - One 30-second sampling timer plus a one-shot second sample 5 seconds after the launch
-  tick, so the process list appears within seconds instead of after a full interval; no
-  network. Two files under Application Support: the settings file, written only when a
-  toggle changes, and the statistics file, written at most once per tick and at quit.
+  tick, both scheduled in the common run-loop mode, so the process list appears within
+  seconds instead of after a full interval; no network. Two files under Application
+  Support: the settings file, written only when a toggle changes, and the statistics
+  file, written at most once per tick and at quit.
 - Settings section in the click menu (headings `Power` and `Sync`, checkmark items),
   replacing two hand-run shell scripts. `Keep awake`, `Keep display awake` and
   `Keep disk awake` hold IOKit power assertions (`PreventUserIdleSystemSleep`,
@@ -139,7 +144,13 @@ The version lives in the `VERSION` file.
   sampled), the Mac's boot time and the write time, and a format version; JSON with sorted
   keys, atomic, at most one write per tick and only on change, one more at quit, a failed
   write retried silently. Never a log: the largest possible document is held under
-  4096 bytes by a test. A missing or unreadable file means a start from zero. Timestamps
+  4096 bytes by a test. A missing or unreadable file means a start from zero. Reading is
+  strict about what it keeps: an entry with a figure that is not a number, negative or
+  beyond a generous physical ceiling (held by a test) is dropped, as is an entry under an
+  unknown flow state, a day with a malformed key, and more than 20 names are folded on
+  reading as a tick folds them; every popover, menu and tooltip line renders absurd
+  figures as zero instead of trapping. A file with a newer format version is read as
+  empty and never overwritten. Timestamps
   in the file are wall-clock unix seconds; the session itself keeps running on uptime.
   Behind `StatisticsStoring` and `WallClockReading` (`Date` plus `kern.boottime`) with
   test doubles, the calendar injected; `RestwattCore` stays free of AppKit and IOKit.

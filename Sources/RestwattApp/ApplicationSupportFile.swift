@@ -5,8 +5,10 @@ import RestwattCore
 /// the directory created on the first write. Shared by the settings and the statistics store.
 struct ApplicationSupportFile {
     let url: URL
+    private let fileManager: FileManager
 
     init(fileName: String, fileManager: FileManager = .default) {
+        self.fileManager = fileManager
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         url = base
@@ -20,7 +22,7 @@ struct ApplicationSupportFile {
     }
 
     func write(_ data: Data) throws {
-        try FileManager.default.createDirectory(
+        try fileManager.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
     }

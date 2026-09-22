@@ -26,8 +26,12 @@ public enum Formatting {
         String(format: "%.2f W", value)
     }
 
-    /// Energy as whole milliwatt-hours below one watt-hour, `x.xx Wh` from there.
+    /// Energy as whole milliwatt-hours below one watt-hour, `x.xx Wh` from there. Nothing
+    /// below zero and nothing that is not a number is shown as energy.
     static func energy(_ wattHours: Double) -> String {
+        guard wattHours.isFinite, wattHours > 0 else {
+            return "0 mWh"
+        }
         let milliWattHours = (wattHours * 1000).rounded()
         if milliWattHours < 1000 {
             return "\(Int(milliWattHours)) mWh"
@@ -35,9 +39,22 @@ public enum Formatting {
         return String(format: "%.2f Wh", wattHours)
     }
 
+    /// Whole minutes for `durationString`, clamped to `[0, PowerMath.maximumMinutes]` so no
+    /// value a file or a clock can deliver traps in the conversion.
+    static func wholeMinutes(seconds: TimeInterval) -> Int {
+        guard seconds.isFinite, seconds > 0 else {
+            return 0
+        }
+        let minutes = (seconds / 60).rounded()
+        guard minutes < Double(PowerMath.maximumMinutes) else {
+            return PowerMath.maximumMinutes
+        }
+        return Int(minutes)
+    }
+
     /// Value of the day's total line: the energy and how long was sampled.
     static func todayTotal(_ statistic: DailyEnergyStatistic) -> String {
-        let minutes = Int((statistic.sampledSeconds / 60).rounded())
+        let minutes = wholeMinutes(seconds: statistic.sampledSeconds)
         return "\(energy(statistic.totalWattHours)) over \(durationString(minutes: minutes)) sampled"
     }
 
@@ -91,7 +108,7 @@ public enum Formatting {
     }
 
     static func observedMinutes(_ estimate: Estimate) -> Int {
-        Int((estimate.observedSeconds / 60).rounded())
+        wholeMinutes(seconds: estimate.observedSeconds)
     }
 
     /// The two time lines of an estimate, or the waiting line without one.

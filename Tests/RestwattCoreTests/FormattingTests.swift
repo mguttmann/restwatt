@@ -131,6 +131,49 @@ final class FormattingTests: XCTestCase {
         XCTAssertEqual(Formatting.energy(12.5), "12.50 Wh")
     }
 
+    /// Nothing a file can deliver may trap in the renderers: the values below are absurd
+    /// on purpose, far beyond what `StatisticsCodec` lets through, and still render.
+    func testExtremeFiguresRenderWithoutTrapping() {
+        XCTAssertEqual(Formatting.energy(-9.2e15), "0 mWh")
+        XCTAssertEqual(Formatting.energy(-0.0001), "0 mWh")
+        XCTAssertEqual(Formatting.energy(.nan), "0 mWh")
+        XCTAssertEqual(Formatting.energy(-.infinity), "0 mWh")
+        XCTAssertEqual(Formatting.energy(.infinity), "0 mWh", "not a number and not finite is not energy")
+        XCTAssertEqual(Formatting.energy(1e300), "\(String(format: "%.2f", 1e300)) Wh")
+        XCTAssertEqual(Formatting.wholeMinutes(seconds: 5.5e20), PowerMath.maximumMinutes)
+        XCTAssertEqual(Formatting.wholeMinutes(seconds: .infinity), 0)
+        XCTAssertEqual(Formatting.wholeMinutes(seconds: .nan), 0)
+        XCTAssertEqual(Formatting.wholeMinutes(seconds: -1e300), 0)
+        XCTAssertEqual(Formatting.wholeMinutes(seconds: 15120), 252)
+
+        let absurd = DailyEnergyStatistic(
+            day: "2026-09-22",
+            entries: [DailyEnergyEntry(name: "huge", wattHours: 1e300),
+                      DailyEnergyEntry(name: "negative", wattHours: -9.2e15),
+                      DailyEnergyEntry(name: "nan", wattHours: .nan),
+                      DailyEnergyEntry(name: "inf", wattHours: .infinity)],
+            otherWattHours: -.infinity, sampledSeconds: 5.5e20)
+        let lines = Formatting.todayLines(absurd, limit: 5)
+        XCTAssertEqual(lines[2], "  negative  0 mWh")
+        XCTAssertEqual(lines[3], "  nan  0 mWh")
+        XCTAssertEqual(lines.last, "  Total today 0 mWh over > 99 h sampled", "a nan total shows as nothing, the seconds hit the cap")
+        let rows = Formatting.todayRows(absurd, limit: 5)
+        XCTAssertEqual(rows.count, 6)
+        XCTAssertEqual(rows.last, DetailRow("Total today", "0 mWh over > 99 h sampled"))
+
+        var model = discharging(estimate: Estimate(
+            instantWatts: 7.138, smoothedWatts: 7.5, instantMinutes: 529, smoothedMinutes: 492,
+            observedSeconds: 5.5e20, sampleCount: Int.max, confidence: .high))
+        if case .battery(var status) = model {
+            status.today = absurd
+            model = .battery(status)
+        }
+        XCTAssertTrue(Formatting.tooltipText(model).contains("(5999 min observed, confidence high)"))
+        XCTAssertEqual(Formatting.menuLines(model, version: "0.1.0").last, "Restwatt 0.1.0")
+        XCTAssertTrue(Formatting.detailRows(model).contains { $0.value.hasPrefix("5999 min observed") },
+                      "the popover rows clamp the observed minutes the same way")
+    }
+
     func testTodayLines() {
         XCTAssertEqual(Formatting.todayLines(Fixtures.todayStatistic, limit: 3), [
             "Today (your processes, CPU energy only, estimate)",

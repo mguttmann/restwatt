@@ -241,15 +241,125 @@ final class EnergyStatisticsTests: XCTestCase {
         let decoded = StatisticsCodec.decode(Data(json.utf8))
         XCTAssertEqual(decoded.estimators["charging"],
                        StoredEstimatorState(smoothedWatts: 49.1, observedSeconds: 720, sampleCount: 13, lastSampleAt: 1_790_064_000))
-        XCTAssertEqual(decoded.estimators["unknownState"],
-                       StoredEstimatorState(smoothedWatts: 1, observedSeconds: 0, sampleCount: 0, lastSampleAt: 0),
-                       "kept in the file; the staleness rule refuses it")
+        XCTAssertNil(decoded.estimators["unknownState"], "a key no PowerState uses is dropped, not passed through")
+        XCTAssertEqual(decoded.estimators.count, 1)
         XCTAssertEqual(decoded.today, DailyEnergyStatistic(day: "2026-09-22", entries: [DailyEnergyEntry(name: "node", wattHours: 0.31)]))
         XCTAssertNil(decoded.bootTime)
         XCTAssertNil(decoded.savedAt)
 
         XCTAssertEqual(StatisticsCodec.decode(Data("{}".utf8)), StoredStatistics())
         XCTAssertEqual(StatisticsCodec.decode(Data("{\"today\":{\"entries\":[]}}".utf8)).today, nil, "a day without a date is no day")
+    }
+
+    // MARK: Validation at the boundary (t9)
+
+    func testTheCeilingsAreGenerousPhysicalMaxima() {
+        XCTAssertEqual(StoredEstimatorState.maximumSmoothedWatts, 1000)
+        XCTAssertEqual(StoredEstimatorState.maximumObservedSeconds, 366 * 86400)
+        XCTAssertEqual(StoredEstimatorState.maximumSampleCount, 366 * 86400)
+        XCTAssertEqual(DailyEnergyStatistic.maximumWattHours, 24000)
+        XCTAssertEqual(DailyEnergyStatistic.maximumSampledSeconds, 7 * 86400)
+        XCTAssertEqual(PowerState.memoryKeys, ["discharging", "drainingOnExternalPower", "charging"])
+    }
+
+    func testAbsurdEstimatorEntriesAreDroppedOneByOne() {
+        let json = """
+        {"version":1,"estimators":{\
+        "charging":{"smoothedWatts":49.1,"observedSeconds":720,"sampleCount":13,"lastSampleAt":1790064000},\
+        "discharging":{"smoothedWatts":-7.5,"observedSeconds":720,"sampleCount":13,"lastSampleAt":1790064000},\
+        "drainingOnExternalPower":{"smoothedWatts":2.2,"observedSeconds":720,"sampleCount":9223372036854775807,"lastSampleAt":1790064000}}}
+        """
+        let decoded = StatisticsCodec.decode(Data(json.utf8))
+        XCTAssertEqual(decoded.estimators.keys.sorted(), ["charging"], "negative watts and Int.max samples are not measurements")
+
+        var entry = StoredEstimatorState(smoothedWatts: 7.5, observedSeconds: 3600, sampleCount: 61, lastSampleAt: 1_790_064_000)
+        XCTAssertTrue(entry.isPlausible)
+        entry.smoothedWatts = 1000.5
+        XCTAssertFalse(entry.isPlausible, "beyond the largest adapter")
+        entry.smoothedWatts = 0
+        XCTAssertTrue(entry.isPlausible, "zero is a value the staleness rule refuses on its own")
+        entry.observedSeconds = 5.5e20
+        XCTAssertFalse(entry.isPlausible)
+        entry.observedSeconds = -1
+        XCTAssertFalse(entry.isPlausible)
+        entry.observedSeconds = 0
+        entry.sampleCount = -1
+        XCTAssertFalse(entry.isPlausible)
+        entry.sampleCount = 0
+        entry.lastSampleAt = -1
+        XCTAssertFalse(entry.isPlausible, "no tick before 1970")
+        entry.lastSampleAt = .infinity
+        XCTAssertFalse(entry.isPlausible)
+        entry.lastSampleAt = .nan
+        XCTAssertFalse(entry.isPlausible)
+    }
+
+    func testAbsurdDayFiguresAreDroppedAtDecode() {
+        // Two absurd names among sane ones: only they go; the day itself stays.
+        let names = """
+        {"today":{"day":"2026-09-22","entries":[{"name":"node","wattHours":0.31},{"name":"huge","wattHours":-9.2e15},\
+        {"name":"vast","wattHours":1e300},{"name":"Restwatt","wattHours":0.012}],"otherWattHours":0.4,"sampledSeconds":15120}}
+        """
+        let day = StatisticsCodec.decode(Data(names.utf8)).today
+        XCTAssertEqual(day?.entries, [DailyEnergyEntry(name: "node", wattHours: 0.31), DailyEnergyEntry(name: "Restwatt", wattHours: 0.012)])
+        XCTAssertEqual(day?.otherWattHours, 0.4)
+
+        // The day's own figures decide the whole day.
+        for broken in [
+            "{\"today\":{\"day\":\"2026-09-22\",\"sampledSeconds\":5.5e20}}",
+            "{\"today\":{\"day\":\"2026-09-22\",\"sampledSeconds\":-30}}",
+            "{\"today\":{\"day\":\"2026-09-22\",\"otherWattHours\":-1}}",
+            "{\"today\":{\"day\":\"2026-09-22\",\"otherWattHours\":1e300}}",
+            "{\"today\":{\"day\":\"yesterday\",\"sampledSeconds\":30}}",
+            "{\"today\":{\"day\":\"2026-9-22\",\"sampledSeconds\":30}}",
+            "{\"today\":{\"day\":\"2026-09-22T00\",\"sampledSeconds\":30}}",
+            "{\"today\":{\"day\":\"٢٠٢٦-09-22\",\"sampledSeconds\":30}}",
+        ] {
+            XCTAssertNil(StatisticsCodec.decode(Data(broken.utf8)).today, broken)
+        }
+        XCTAssertTrue(DailyEnergyStatistic.isDayKey("2026-09-22"))
+        XCTAssertTrue(DailyEnergyStatistic.isDayKey("0000-00-00"), "the shape is checked, not the calendar")
+        XCTAssertFalse(DailyEnergyStatistic.isDayKey("2026/09/22"))
+        XCTAssertFalse(DailyEnergyStatistic.isDayKey(""))
+    }
+
+    func testMoreNamesThanTheCapAreFoldedAtDecodeAsRecordWouldFoldThem() {
+        let entries = (1...25).map { "{\"name\":\"p\($0 < 10 ? "0" : "")\($0)\",\"wattHours\":\($0)}" }.joined(separator: ",")
+        let json = "{\"today\":{\"day\":\"2026-09-22\",\"entries\":[\(entries)],\"otherWattHours\":1,\"sampledSeconds\":3600}}"
+        let day = StatisticsCodec.decode(Data(json.utf8)).today!
+        XCTAssertEqual(day.entries.count, DailyEnergyStatistic.maximumNames)
+        XCTAssertEqual(day.entries.first, DailyEnergyEntry(name: "p25", wattHours: 25))
+        XCTAssertEqual(day.entries.last, DailyEnergyEntry(name: "p06", wattHours: 6))
+        XCTAssertEqual(day.otherWattHours, 1 + 1 + 2 + 3 + 4 + 5, accuracy: 1e-9, "the five smallest fold into other")
+        XCTAssertEqual(day.totalWattHours, 1 + Double((1...25).reduce(0, +)), accuracy: 1e-9, "the total survives the fold")
+
+        // Twenty names in file order survive untouched apart from the sort.
+        let twenty = fullDocument
+        XCTAssertEqual(StatisticsCodec.decode(StatisticsCodec.encode(twenty)).today, twenty.today)
+    }
+
+    func testANewerFormatIsUnreadableAndNeverOverwritten() {
+        let json = """
+        {"version":2,"bootTime":1789998856,"estimators":{"charging":{"smoothedWatts":49.1,"observedSeconds":720,\
+        "sampleCount":13,"lastSampleAt":1790064000}},"today":{"day":"2026-09-22","sampledSeconds":30}}
+        """
+        let decoded = StatisticsCodec.decode(Data(json.utf8))
+        XCTAssertEqual(decoded, StoredStatistics(version: 2), "nothing of a newer file is read, only its version")
+        XCTAssertTrue(decoded.isNewerFormat)
+        XCTAssertFalse(StoredStatistics().isNewerFormat)
+        XCTAssertFalse(StoredStatistics(version: 0).isNewerFormat, "an older number reads as the current format")
+
+        let store = MemoryStatisticsStore(decoded)
+        let memory = EnergyMemory(store: store, wallClock: ManualWallClock(), calendar: Fixtures.newYork)
+        memory.record(interval, dt: 30)
+        var estimator = EnergyFlowEstimator()
+        estimator.add(time: 0, energyWattHours: 60, watts: 7.5)
+        memory.remember(estimator, for: "discharging")
+        XCTAssertEqual(memory.today?.sampledSeconds, 30, "the session still keeps its statistic in memory")
+        XCTAssertEqual(memory.resume("discharging").estimate, nil)
+        memory.saveIfChanged()
+        XCTAssertEqual(store.saveCount, 0, "this app never writes over a newer file")
+        XCTAssertEqual(store.stored?.version, 2)
     }
 
     func testUnreadableDataMeansAStartFromZero() {

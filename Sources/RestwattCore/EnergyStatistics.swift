@@ -18,6 +18,13 @@ public protocol StatisticsStoring {
 
 /// One flow state's estimator as the last session left it.
 public struct StoredEstimatorState: Equatable, Sendable {
+    /// Generous physical ceilings for a file entry; the largest USB-C adapter delivers 240 W,
+    /// and no estimator observes longer than a year. Anything beyond is not a measurement.
+    public static let maximumSmoothedWatts: Double = 1000
+    public static let maximumObservedSeconds: TimeInterval = 366 * 86400
+    /// One sample per second for a year.
+    public static let maximumSampleCount = Int(maximumObservedSeconds)
+
     public var smoothedWatts: Double
     public var observedSeconds: TimeInterval
     public var sampleCount: Int
@@ -29,6 +36,21 @@ public struct StoredEstimatorState: Equatable, Sendable {
         self.observedSeconds = observedSeconds
         self.sampleCount = sampleCount
         self.lastSampleAt = lastSampleAt
+    }
+
+    /// Whether every figure is finite, non-negative and within its ceiling; the codec drops
+    /// entries that are not, so nothing downstream converts an absurd value.
+    public var isPlausible: Bool {
+        (0...Self.maximumSmoothedWatts).contains(smoothedWatts)
+            && (0...Self.maximumObservedSeconds).contains(observedSeconds)
+            && (0...Self.maximumSampleCount).contains(sampleCount)
+            && lastSampleAt.isFinite && lastSampleAt >= 0
+    }
+
+    /// The observation window a resume at `now` would get, or 0 when the entry is expired.
+    /// This is the currency in which two entries for the same state are compared.
+    func resumableSeconds(now: Date) -> TimeInterval {
+        resumable(now: now, storedBootTime: nil, currentBootTime: nil)?.observedSeconds ?? 0
     }
 
     /// The staleness rule: what of this entry a new session may resume, or nil when it is
@@ -71,12 +93,21 @@ public struct DailyEnergyEntry: Equatable, Sendable {
         self.name = name
         self.wattHours = wattHours
     }
+
+    /// Finite, non-negative and within `DailyEnergyStatistic.maximumWattHours`.
+    public var isPlausible: Bool {
+        (0...DailyEnergyStatistic.maximumWattHours).contains(wattHours)
+    }
 }
 
 /// CPU energy per process name, summed over the sampled intervals of one local calendar day.
 public struct DailyEnergyStatistic: Equatable, Sendable {
     /// Names kept; the smallest beyond this are folded into `otherWattHours` after every tick.
     public static let maximumNames = 20
+    /// Generous physical ceilings for a file entry: a kilowatt for a whole day per figure, and
+    /// no more sampled seconds than a week holds. Anything beyond is not a measurement.
+    public static let maximumWattHours: Double = 1000 * 24
+    public static let maximumSampledSeconds: TimeInterval = 7 * 86400
 
     /// Local calendar day as `YYYY-MM-DD`.
     public var day: String
@@ -99,6 +130,30 @@ public struct DailyEnergyStatistic: Equatable, Sendable {
         entries.reduce(otherWattHours) { $0 + $1.wattHours }
     }
 
+    /// Whether the day key has the `YYYY-MM-DD` shape and the day's own figures are finite,
+    /// non-negative and within their ceilings. The entries are judged one by one by
+    /// `DailyEnergyEntry.isPlausible`.
+    public var isPlausible: Bool {
+        Self.isDayKey(day)
+            && (0...Self.maximumWattHours).contains(otherWattHours)
+            && (0...Self.maximumSampledSeconds).contains(sampledSeconds)
+    }
+
+    /// `YYYY-MM-DD`: ten ASCII characters, digits with hyphens at the two expected places.
+    static func isDayKey(_ key: String) -> Bool {
+        let scalars = Array(key.unicodeScalars)
+        guard scalars.count == 10 else {
+            return false
+        }
+        for (index, scalar) in scalars.enumerated() {
+            let expectHyphen = index == 4 || index == 7
+            if expectHyphen ? scalar != "-" : !("0"..."9").contains(scalar) {
+                return false
+            }
+        }
+        return true
+    }
+
     /// The day `date` falls on in `calendar`, as `YYYY-MM-DD`.
     public static func dayKey(for date: Date, calendar: Calendar) -> String {
         let components = calendar.dateComponents([.year, .month, .day], from: date)
@@ -117,18 +172,25 @@ public struct DailyEnergyStatistic: Equatable, Sendable {
         for entry in interval {
             byName[entry.name, default: 0] += entry.watts * dt / 3600
         }
-        let sorted = byName.map { DailyEnergyEntry(name: $0.key, wattHours: $0.value) }
-            .sorted { lhs, rhs in
-                if lhs.wattHours != rhs.wattHours {
-                    return lhs.wattHours > rhs.wattHours
-                }
-                return lhs.name < rhs.name
+        entries = byName.map { DailyEnergyEntry(name: $0.key, wattHours: $0.value) }
+        bound()
+        sampledSeconds += dt
+    }
+
+    /// Sort the entries by energy, descending, ties by name, and fold everything beyond
+    /// `maximumNames` into `otherWattHours`. `record` does this after every tick; the codec
+    /// does it to a file that carries more names than this app writes.
+    public mutating func bound() {
+        let sorted = entries.sorted { lhs, rhs in
+            if lhs.wattHours != rhs.wattHours {
+                return lhs.wattHours > rhs.wattHours
             }
+            return lhs.name < rhs.name
+        }
         entries = Array(sorted.prefix(Self.maximumNames))
         for evicted in sorted.dropFirst(Self.maximumNames) {
             otherWattHours += evicted.wattHours
         }
-        sampledSeconds += dt
     }
 }
 
@@ -139,6 +201,12 @@ public struct StoredStatistics: Equatable, Sendable {
     public static let currentVersion = 1
     /// Boot times further apart than this mean a reboot happened in between.
     public static let bootTimeTolerance: TimeInterval = 60
+
+    /// Written by a newer Restwatt: nothing of it is read, and this app must not overwrite
+    /// it either.
+    public var isNewerFormat: Bool {
+        version > Self.currentVersion
+    }
 
     public var version: Int
     /// Wall-clock boot time (unix seconds) of the session that wrote the file, if known.
@@ -163,7 +231,12 @@ public struct StoredStatistics: Equatable, Sendable {
 }
 
 /// JSON encoding of `StoredStatistics`. Tolerant on the way in: unknown keys are ignored,
-/// missing keys mean defaults, unreadable data means defaults. Deterministic on the way out.
+/// missing keys mean defaults, unreadable data means defaults. Strict about what it keeps:
+/// an estimator entry under a key no `PowerState` uses, or with a figure that is not finite,
+/// negative or beyond its ceiling, is dropped; a day with a malformed key or absurd totals is
+/// dropped, an absurd name entry is dropped, and more names than `maximumNames` are folded
+/// as `record` would fold them. A file with a newer format version yields defaults plus that
+/// version, so the memory knows not to overwrite it. Deterministic on the way out.
 /// Timestamps are plain unix seconds, not Foundation's reference-date encoding of `Date`.
 public enum StatisticsCodec {
     private struct EstimatorDocument: Codable {
@@ -221,28 +294,39 @@ public enum StatisticsCodec {
         guard let document = try? JSONDecoder().decode(Document.self, from: data) else {
             return StoredStatistics()
         }
+        let version = document.version ?? StoredStatistics.currentVersion
+        guard version <= StoredStatistics.currentVersion else {
+            return StoredStatistics(version: version)
+        }
         var estimators: [String: StoredEstimatorState] = [:]
-        for (key, state) in document.estimators ?? [:] {
-            estimators[key] = StoredEstimatorState(
+        for (key, state) in document.estimators ?? [:] where PowerState.memoryKeys.contains(key) {
+            let candidate = StoredEstimatorState(
                 smoothedWatts: state.smoothedWatts ?? 0,
                 observedSeconds: state.observedSeconds ?? 0,
                 sampleCount: state.sampleCount ?? 0,
                 lastSampleAt: state.lastSampleAt ?? 0)
+            if candidate.isPlausible {
+                estimators[key] = candidate
+            }
         }
         var today: DailyEnergyStatistic?
         if let day = document.today?.day {
-            today = DailyEnergyStatistic(
+            var candidate = DailyEnergyStatistic(
                 day: day,
                 entries: (document.today?.entries ?? []).compactMap { entry in
                     entry.name.map { DailyEnergyEntry(name: $0, wattHours: entry.wattHours ?? 0) }
-                },
+                }.filter(\.isPlausible),
                 otherWattHours: document.today?.otherWattHours ?? 0,
                 sampledSeconds: document.today?.sampledSeconds ?? 0)
+            if candidate.isPlausible {
+                candidate.bound()
+                today = candidate
+            }
         }
         return StoredStatistics(
-            version: document.version ?? StoredStatistics.currentVersion,
-            bootTime: document.bootTime,
-            savedAt: document.savedAt,
+            version: version,
+            bootTime: document.bootTime.flatMap { $0.isFinite ? $0 : nil },
+            savedAt: document.savedAt.flatMap { $0.isFinite ? $0 : nil },
             estimators: estimators,
             today: today)
     }
