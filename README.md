@@ -46,9 +46,14 @@ the first gauge reading`.
 
 The popover does not take focus away from the app you are working in and is rebuilt from
 the latest sample whenever it is shown or a new sample arrives while it is visible. It
-closes when the click menu opens. The rows themselves come from the unit-tested
-`RestwattCore` layer; the hover behaviour itself is AppKit code without an automated
-test, so please open an issue if the popover does not appear or does not go away for you.
+closes when the click menu opens. The menu bar item is hosted by the system, not by a
+window the app owns, so Restwatt cannot be told directly when the pointer enters it.
+Instead it watches pointer movement system-wide and checks each position against the
+item's current frame; only the resulting enter and leave transitions drive the popover.
+The rows and the enter/leave logic (`PointerRegionTracker`) come from the unit-tested
+`RestwattCore` layer; showing and hiding the popover itself is AppKit code without an
+automated test, so please open an issue if the popover does not appear or does not go
+away for you.
 
 **Click** on the item opens a menu with the same rows, the top five processes, the
 version number and `Quit Restwatt`. The information lines are drawn in the normal label
@@ -157,6 +162,9 @@ background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the ass
   the time-to-empty estimate is read. Serial numbers and manufacturer data are not read,
   logged or shown.
 - From processes only the pid, the name and the rusage counters are read.
+- Restwatt watches pointer movement system-wide only to notice when the pointer rests on
+  its menu bar item. It looks at the pointer position alone, not at clicks, keys or the
+  windows underneath, and stores nothing.
 
 ## Repository layout
 
@@ -170,11 +178,12 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   ProcessEnergyRanker.swift        per-process energy deltas, aggregation by name
   BatteryMonitor.swift             one tick: read, dedupe, estimate, rank; Sampling.interval
   Formatting.swift                 every user-visible string
+  PointerRegionTracker.swift       pointer enter/leave transitions for the menu bar item
   DetailRow.swift                  label/value rows for the popover and the menu
 Sources/RestwattApp/               the menu bar app
   main.swift                       NSApplication bootstrap, accessory activation policy
   AppDelegate.swift                timer, power-source notification, wiring
-  StatusItemController.swift       NSStatusItem title, hover tracking, click menu
+  StatusItemController.swift       NSStatusItem title, pointer monitor, hover popover, click menu
   DetailPopover.swift              NSPopover with the detail rows in a two-column grid
   IOKitBatteryReader.swift         AppleSmartBattery registry and IOPowerSources
   LibprocProcessReader.swift       proc_listallpids and proc_pid_rusage (RUSAGE_INFO_V6)
@@ -199,7 +208,8 @@ swift test
 tests run on any Mac and on CI. The suite pins the menu bar strings, the detail rows of
 the popover and the menu (and that they carry the same figures as the plain text lines),
 the estimator behaviour (including a test that fails when the time constant is not adaptive),
-the ranker's handling of pid reuse, and a few repository invariants: `VERSION` matches the
+the ranker's handling of pid reuse, the pointer enter/leave transitions behind the hover
+popover, and a few repository invariants: `VERSION` matches the
 latest CHANGELOG release, this README states the sampling interval, and no file contains
 an em dash or en dash.
 

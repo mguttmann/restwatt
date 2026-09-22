@@ -3,11 +3,14 @@ import RestwattCore
 
 /// Owns the NSStatusItem: title, hover popover and the click menu.
 ///
-/// Hover path: an `NSTrackingArea` on the status item button reports the pointer entering
-/// and leaving. Entering arms one short timer; when it fires the popover is shown from the
-/// latest model. Leaving the button arms a short hide timer, which the popover's own
-/// tracking area cancels if the pointer moved onto the popover. No timer exists while the
-/// pointer is neither arriving nor leaving.
+/// Hover path: the menu bar item is hosted by the system, so the app owns no on-screen window
+/// for it and an `NSTrackingArea` on the button never fires. Instead a global mouse-moved
+/// monitor hit-tests the pointer position against the button window's current frame (read on
+/// every event, it is empty at launch and moves when the menu bar reflows) and reports only
+/// enter/leave transitions. Entering arms one short timer; when it fires the popover is shown
+/// from the latest model. Leaving arms a short hide timer, which the popover's own tracking
+/// area cancels if the pointer moved onto the popover. No timer exists while the pointer is
+/// neither arriving nor leaving. The monitor looks at pointer position only and stores nothing.
 @MainActor
 final class StatusItemController: NSObject, NSMenuDelegate {
     /// Seconds between the pointer entering the item and the popover appearing.
@@ -19,6 +22,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let menu = NSMenu()
     private let popover = DetailPopover()
     private var hoverTimer: Timer?
+    private var pointerMonitor: Any?
+    private var pointerTracker = PointerRegionTracker()
     /// True between menuWillOpen and menuDidClose; no popover is armed or shown meanwhile.
     private var menuIsOpen = false
     private var latestModel: DisplayModel = .unavailable(reason: "Starting")
@@ -34,7 +39,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         statusItem.menu = menu
         statusItem.button?.title = "Restwatt"
-        installHoverTracking()
+        installPointerMonitor()
+    }
+
+    /// Removes the global pointer monitor; called from applicationWillTerminate.
+    func stopObservingPointer() {
+        cancelHoverTimer()
+        if let pointerMonitor {
+            NSEvent.removeMonitor(pointerMonitor)
+            self.pointerMonitor = nil
+        }
     }
 
     func show(_ model: DisplayModel) {
@@ -45,16 +59,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     // MARK: Hover popover
 
-    private func installHoverTracking() {
-        guard let button = statusItem.button else {
-            return
+    private func installPointerMonitor() {
+        pointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            MainActor.assumeIsolated {
+                self?.pointerMoved(event)
+            }
         }
-        let area = NSTrackingArea(
-            rect: .zero,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil)
-        button.addTrackingArea(area)
         popover.onMouseEntered = { [weak self] in
             self?.cancelHoverTimer()
         }
@@ -63,8 +73,27 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// `NSTrackingArea` owner callback: the pointer entered the status item button.
-    @objc func mouseEntered(with event: NSEvent) {
+    /// Global monitor callback: hit-tests the pointer against the item's current frame and
+    /// forwards only enter/leave transitions.
+    private func pointerMoved(_ event: NSEvent) {
+        guard let frame = statusItem.button?.window?.frame else {
+            return
+        }
+        let location = NSEvent.mouseLocation
+        let region = PointerRegionTracker.Region(
+            x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
+        switch pointerTracker.update(pointerX: location.x, pointerY: location.y, region: region) {
+        case .entered:
+            mouseEntered(with: event)
+        case .left:
+            mouseExited(with: event)
+        case nil:
+            break
+        }
+    }
+
+    /// The pointer entered the status item.
+    func mouseEntered(with event: NSEvent) {
         cancelHoverTimer()
         if popover.isShown || menuIsOpen {
             return
@@ -77,8 +106,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             repeats: false)
     }
 
-    /// `NSTrackingArea` owner callback: the pointer left the status item button.
-    @objc func mouseExited(with event: NSEvent) {
+    /// The pointer left the status item.
+    func mouseExited(with event: NSEvent) {
         scheduleHide()
     }
 

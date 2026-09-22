@@ -20,6 +20,10 @@ The version lives in the `VERSION` file.
   rows in the normal label colour with monospaced digits; the current draw and both
   time-left values are emphasised. The popover does not take focus, closes when the
   pointer leaves it and when the menu opens, and is rebuilt from the latest sample.
+  Hover detection uses a global mouse-moved monitor with a hit test against the item's
+  current frame (`PointerRegionTracker` in `RestwattCore`, unit-tested), because the menu
+  bar item is system-hosted and a tracking area on it never fires. The monitor observes the
+  pointer position only and stores nothing; it is removed when the app terminates.
 - Click menu with the same rows, the top five processes, the version and
   `Quit Restwatt`. Information lines are enabled items without an action, so they are
   drawn in the normal label colour instead of the disabled grey.
