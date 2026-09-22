@@ -146,9 +146,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     // MARK: Click menu
 
-    /// The menu is rebuilt from the latest model each time it opens. Information items stay
-    /// enabled (no action, so selecting one only closes the menu) to be drawn in the normal
-    /// label colour instead of the disabled grey. The settings section is rendered from the
+    /// The menu is rebuilt from the latest model each time it opens. Information rows are
+    /// display-only view-backed items (`MenuRowView`): drawn in the normal label colour, they
+    /// neither highlight nor react to a click, and keyboard navigation skips them. Only the
+    /// toggles and Quit are ordinary menu items. The settings section is rendered from the
     /// system state read right now, so its checkmarks never show a stale or intended state.
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
@@ -162,9 +163,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
             for row in Formatting.processRows(status.processReport, limit: 5)
                 + Formatting.todayRows(status.today, limit: 5) {
-                let item = Self.menuItem(for: row)
-                item.indentationLevel = row.emphasis == .heading ? 0 : 1
-                menu.addItem(item)
+                menu.addItem(Self.menuItem(for: row, indentationLevel: row.emphasis == .heading ? 0 : 1))
             }
         }
         menu.addItem(.separator())
@@ -183,9 +182,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menuIsOpen = false
     }
 
-    private static func menuItem(for row: DetailRow) -> NSMenuItem {
-        let item = NSMenuItem(title: row.label, action: nil, keyEquivalent: "")
-        item.isEnabled = true
+    private static func menuItem(for row: DetailRow, indentationLevel: Int = 0) -> NSMenuItem {
         let size = NSFont.systemFontSize
         let title = NSMutableAttributedString(
             string: row.label,
@@ -197,21 +194,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 attributes: [.font: NSFont.monospacedDigitSystemFont(
                     ofSize: size, weight: row.emphasis == .primary ? .semibold : .regular)]))
         }
-        item.attributedTitle = title
-        return item
+        return MenuRowView.menuItem(text: title, indentationLevel: indentationLevel)
     }
 
     /// A settings row: toggles carry the key in `representedObject` and a checkmark state;
-    /// notes and warnings are indented, action-free lines like the process list entries.
+    /// headings, notes and warnings are display-only rows like the process list entries.
     private func menuItem(for row: SettingsRow) -> NSMenuItem {
         let size = NSFont.systemFontSize
         switch row.kind {
         case .heading:
-            let item = NSMenuItem(title: row.label, action: nil, keyEquivalent: "")
-            item.isEnabled = true
-            item.attributedTitle = NSAttributedString(
-                string: row.label, attributes: [.font: NSFont.systemFont(ofSize: size, weight: .regular)])
-            return item
+            return MenuRowView.menuItem(text: NSAttributedString(
+                string: row.label, attributes: [.font: NSFont.systemFont(ofSize: size, weight: .regular)]))
         case .toggle(let key, let isOn):
             let item = NSMenuItem(title: row.label, action: #selector(toggleSetting(_:)), keyEquivalent: "")
             item.target = self
@@ -230,15 +223,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             }
             return item
         case .note, .warning:
-            let item = NSMenuItem(title: row.label, action: nil, keyEquivalent: "")
-            item.isEnabled = true
-            item.indentationLevel = 2
             let colour: NSColor = row.kind == .warning ? .systemOrange : .secondaryLabelColor
-            item.attributedTitle = NSAttributedString(
+            let text = NSAttributedString(
                 string: row.label,
                 attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                              .foregroundColor: colour])
-            return item
+            return MenuRowView.menuItem(text: text, indentationLevel: 2)
         }
     }
 

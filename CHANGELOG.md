@@ -36,8 +36,10 @@ The version lives in the `VERSION` file.
   bar item is system-hosted and a tracking area on it never fires. The monitor observes the
   pointer position only and stores nothing; it is removed when the app terminates.
 - Click menu with the same rows, the top five processes, the five largest `Today` names
-  with the total, the settings section (below), the version and `Quit Restwatt`. Information lines are enabled items without an
-  action, so they are drawn in the normal label colour instead of the disabled grey.
+  with the total, the settings section (below), the version and `Quit Restwatt`. Information lines are display-only
+  view-backed items (`MenuRowView`): drawn in the normal label colour instead of the
+  disabled grey, they do not highlight, a click on them does nothing and leaves the menu
+  open, and keyboard navigation skips them.
 - Adaptive energy-flow estimator (`EnergyFlowEstimator`) for both directions: time to
   empty from the remaining Wh and the draw, time to full from the missing Wh (full-charge
   minus remaining capacity at the present voltage) and the charging power. Starts from the

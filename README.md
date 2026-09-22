@@ -111,10 +111,11 @@ away for you.
 **Click** on the item opens a menu with the same rows, the top five processes, the five
 largest `Today` names with the total, the settings section described under "What it can
 do", the version number and
-`Quit Restwatt`. The information lines are drawn in the normal label
-colour (they are enabled menu items without an action; selecting one only closes the
-menu). The menu is rebuilt from the latest sample each time it opens, and Cmd-Q inside
-the menu quits.
+`Quit Restwatt`. The information lines are display-only: they are drawn in the normal
+label colour but do not highlight under the pointer, a click on them does nothing and
+leaves the menu open, and keyboard navigation skips them; only the checkmark items and
+`Quit Restwatt` respond. The menu is rebuilt from the latest sample each time it opens,
+and Cmd-Q inside the menu quits.
 
 ## What it can do
 
@@ -576,6 +577,7 @@ Sources/RestwattApp/               the menu bar app
   AppDelegate.swift                timers, power-source notification, settings reconcile, wall clock, wiring
   StatusItemController.swift       NSStatusItem title, pointer monitor, popover, menu with settings
   DetailPopover.swift              NSPopover with the detail rows in a two-column grid
+  MenuRowView.swift                view behind the display-only rows of the click menu
   IOKitBatteryReader.swift         AppleSmartBattery registry and IOPowerSources
   LibprocProcessReader.swift       proc_listallpids and proc_pid_rusage (RUSAGE_INFO_V6)
   IOKitPowerAssertions.swift       IOPMAssertionCreateWithName and IOPMAssertionRelease
