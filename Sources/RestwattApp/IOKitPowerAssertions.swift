@@ -13,7 +13,7 @@ struct IOKitPowerAssertions: PowerAssertionHolding {
             name as CFString,
             &identifier)
         guard result == kIOReturnSuccess else {
-            throw SettingsFailure("IOPMAssertionCreateWithName returned \(String(result, radix: 16))")
+            throw SettingsFailure("IOPMAssertionCreateWithName returned \(SystemStateParser.ioReturnHex(result))")
         }
         return identifier
     }

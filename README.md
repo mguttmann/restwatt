@@ -128,8 +128,10 @@ so on while it is held. Turning a toggle off releases the assertion; quitting or
 Restwatt releases every assertion with the process, so these three cannot outlive the
 app. The choice is remembered in the settings file and re-acquired at the next launch.
 If the system refuses one of them at launch, that toggle shows off with the reason under
-it, the other remembered toggles are acquired all the same, and the refused choice is
-recorded as off so the file never claims more than the menu shows.
+it, the other remembered toggles are acquired all the same, and the choice stays in the
+file: the checkmark follows what Restwatt holds, the file keeps what you chose, and the
+next launch tries again without a click. Turning the toggle off is what changes the file;
+a refused click from off changes nothing, so no file appears for it.
 `Keep awake` prevents idle sleep only: closing the lid still puts the Mac to sleep. If
 you run a LaunchAgent of your own that keeps `caffeinate -d` alive, `Keep display awake`
 is redundant with it; Restwatt leaves such an agent alone and neither loads nor unloads
@@ -155,28 +157,49 @@ The "off" values are one chosen saver profile (the one the replaced script wrote
 captured factory default and not whatever your Mac had before: Restwatt does not save or
 restore earlier `pmset` values. Both command lines are constants in `RestwattCore` and
 the unit tests pin them word for word, so the text above cannot drift from the code. To
-run `pmset` as root, Restwatt first tries `sudo -n pmset ...`, which succeeds only when
-sudo needs no password for your account and fails at once otherwise; when it fails,
-Restwatt shows the native macOS administrator dialog (`osascript`, `do shell script ...
-with administrator privileges`) once per profile, chaining the calls of the profile into
-that single dialog. Nothing but `pmset` with these fixed arguments ever runs with
-administrator rights, no command line is built from user data, and Restwatt never
-creates, edits or recommends a rule that lets sudo skip the password. Cancelling the
-dialog, or any other failure, leaves the checkmark off, as observed, with the reason
-under the item.
+run `pmset` as root, Restwatt tries `sudo -n pmset ...` for each call of the profile in
+turn, which succeeds only when sudo needs no password for your account and fails at once
+otherwise. Restwatt tells the two ways a call can fail apart: sudo refusing to run
+without a password (`sudo -n` exits with status 1 and reports `a password is required` or
+`a terminal is required` on its own stderr) is a denial; any other failure is `pmset`
+itself, which ran as root and refused its arguments, for example a key this hardware does
+not support. Only a denial opens the native macOS administrator dialog (`osascript`,
+`do shell script ... with administrator privileges`), once per profile and only for the
+calls sudo did not get to run, chained into that single dialog; the calls that already
+succeeded are not run again. A `pmset` failure stops the profile at that call, opens no
+dialog, re-runs nothing, and puts the failing command line, its exit status and its own
+message under the toggle; the calls before it stay applied. Nothing but `pmset` with these
+fixed arguments ever runs with administrator rights, no command line is built from user
+data, and Restwatt never creates, edits or recommends a rule that lets sudo skip the
+password. Cancelling the dialog, or any other failure, leaves the checkmark off, as
+observed, with the reason under the item. The denial texts are sudo's documented wording;
+the unit tests pin them, a live denial was not recorded during development.
 
 Two safety facts, stated plainly:
 
 1. **The lid-closed setting outlives the app, so Restwatt takes it back.** The menu says
-   so under the toggle. When Restwatt quits normally (`Quit Restwatt` or Cmd-Q) while it
-   had turned the setting on, it writes the saver profile first (on a Mac where sudo asks
-   for a password that is one administrator dialog at quit; cancelling it leaves the
-   setting on, and Restwatt remembers that it still owes the reset). A crash, a `kill`
-   or a Force Quit skips that step, and the Mac stays unable to sleep until Restwatt runs
-   again: at every launch Restwatt checks its settings file, and if it recorded that it
-   turned the setting on and `pmset -g` still shows `SleepDisabled 1`, it writes the
-   saver profile then. That launch write does not depend on anything else Restwatt does
-   at launch; a power assertion the system refuses to re-acquire does not skip it.
+   so under the toggle. The record comes first: when you turn the toggle on, Restwatt
+   writes "armed by Restwatt" into its settings file before `pmset` runs as root, and if
+   that file cannot be saved the awake profile is not written at all and the toggle says
+   so (`not written, the settings file could not be saved`). So there is never a
+   `disablesleep 1` of Restwatt's without a record of it, whatever happens in between.
+   When Restwatt quits normally (`Quit Restwatt` or Cmd-Q) while it had turned the setting
+   on, it writes the saver profile first (on a Mac where sudo asks for a password that is
+   one administrator dialog at quit; cancelling it leaves the setting on, and Restwatt
+   keeps the record, so it still owes the reset). A crash, a `kill` or a Force Quit skips
+   that quit step: the Mac stays unable to sleep until Restwatt runs again, and the reset
+   happens at that next launch. At every launch Restwatt reads its record and `pmset -g`
+   and handles the four combinations: record on and `SleepDisabled 1` is Restwatt's own
+   setting, so it writes the saver profile then; record on and `SleepDisabled 0` means
+   the write never landed (the record was saved, then the dialog was cancelled or the
+   app died before `pmset` ran) or somebody else already reset it, so the record is
+   dropped quietly with no write; no record and `SleepDisabled 1` is somebody else's
+   setting and is left alone; no record and `SleepDisabled 0` is nothing to do. The same
+   quiet drop happens after a click whose write did not land, so a cancelled dialog does
+   not leave a stale record behind. That launch write does not depend on anything else
+   Restwatt does at launch; a power assertion the system refuses to re-acquire does not
+   skip it. When the record is on but `pmset -g` cannot be read, the record stays and the
+   quit reconcile tries again.
    Restwatt only ever takes back what it set itself. A `SleepDisabled 1` that another
    tool or script set is left alone and shown as on with the note `set outside
    Restwatt`; turning that toggle off by hand writes the saver profile all the same. The
@@ -205,12 +228,20 @@ state; it is read again when the menu opens next. Whether a `launchctl` call suc
 judged by the state read back afterwards, not by its exit code (the exit codes appear in
 the reason line only when the target state was not reached). If the settings file cannot
 be written, the action still happens and a line at the bottom of the section says
-`settings could not be saved` with the reason. If `pmset -g` cannot be read, the
-lid-closed toggle shows off with `could not read pmset` and the reason, and nothing is
-written. The privileged path, the `launchctl` switching and the OneDrive control were
-tested against doubles that pin the exact commands and simulate the resulting system
-state; they were not exercised against a live system during development, and clicking
-the items is not automated. Please open an issue if a toggle misbehaves on your Mac.
+`settings could not be saved` with the reason; the one exception is turning `Stay awake
+with the lid closed` on, which needs its record saved first and is refused otherwise
+(see safety fact 1). If `pmset -g` cannot be read, the lid-closed toggle shows off with
+`could not read pmset` and the reason, and nothing is written at launch. Clicking it in
+that state refuses to write the awake profile (`not written, could not read pmset` plus
+the reason), because a setting written blind could never be switched off from the menu
+again; only when Restwatt's own record says it turned the setting on does the click write
+the saver profile, the safe direction. If OneDrive cannot be started under any of its
+bundle identifiers, the reason shown is the one for the primary identifier
+(`com.microsoft.OneDrive-mac`), not the last fallback's. The privileged path, the
+`launchctl` switching and the OneDrive control were tested against doubles that pin the
+exact commands and simulate the resulting system state; they were not exercised against a
+live system during development, and clicking the items is not automated. Please open an
+issue if a toggle misbehaves on your Mac.
 
 ## How the estimate works
 
@@ -354,14 +385,18 @@ background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the ass
 
 - No network access, no telemetry, no analytics, no crash reporting.
 - The only file Restwatt writes is `~/Library/Application Support/Restwatt/settings.json`,
-  and only once a setting changes (a launch that touches nothing leaves no file behind).
-  It holds the on/off choice of the three `Keep ... awake` toggles and the flag that
-  Restwatt itself turned on `Stay awake with the lid closed`; a missing or unreadable file
-  means everything off. Nothing else is stored: no history, no sync choice, no
-  measurement. Deleting the file resets the settings; do it while `Stay awake with the
-  lid closed` is off, because the file is also where Restwatt remembers that it owes the
-  saver profile, and without it the next launch treats a `SleepDisabled 1` as set
-  outside Restwatt and takes nothing back.
+  and only when a setting changes. "Nothing is written" holds for the launch path: a
+  launch that touches nothing leaves no file behind. A click does write it, and turning
+  `Stay awake with the lid closed` on writes it before `pmset` runs (the record comes
+  first, see "What it can do"). The file holds the on/off choice of the three
+  `Keep ... awake` toggles and the flag that Restwatt itself turned on `Stay awake with
+  the lid closed`; a missing or unreadable file means everything off. Nothing else is
+  stored: no history, no sync choice, no measurement. Deleting the file resets the
+  settings; do it while `Stay awake with the lid closed` is off. Deleting it while the
+  toggle is on loses the record: the setting stays on the Mac, the next launch treats the
+  `SleepDisabled 1` as set outside Restwatt and takes nothing back, and quitting writes
+  nothing either; turn the toggle off by hand in the menu or run the saver `pmset` calls
+  yourself.
 - Restwatt changes the system only when you click a setting, plus the two safety writes
   described under "What it can do" (the saver profile at quit and at launch, only when
   Restwatt itself had turned the lid-closed setting on). It runs `pmset` as administrator
@@ -369,10 +404,12 @@ background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the ass
   session domain for iCloud Drive and iCloud Photos, and launches or asks OneDrive to quit
   through LaunchServices. Nothing else runs with administrator rights. Restwatt itself
   starts no shell: it launches `sudo`, `pmset`, `launchctl` and `osascript` directly with
-  fixed argument lists. The one place a shell runs is inside the administrator dialog,
-  where macOS executes the fixed `pmset` line through `do shell script`; every token of
-  that line is checked against a fixed alphabet before it is used, and every command
-  line is built from constants in the source.
+  fixed argument lists. The one place a shell runs is the administrator dialog, where
+  macOS itself executes the fixed `pmset` line through its script runner (`osascript`,
+  `do shell script ... with administrator privileges`); that line reaches the dialog only
+  after sudo refused to run without a password, and it carries only the `pmset` calls not
+  yet applied. Every token of that line is checked against a fixed alphabet before it is
+  used, and every command line is built from constants in the source.
 - From the battery registry entry only these keys are used: `UpdateTime`, `Voltage`,
   `Amperage`, `CurrentCapacity`, `IsCharging`, `ExternalConnected`, `FullyCharged`,
   `AvgTimeToEmpty`, `AvgTimeToFull`, inside `BatteryData` the keys `BatteryPower`,

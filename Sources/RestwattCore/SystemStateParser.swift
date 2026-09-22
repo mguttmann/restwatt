@@ -32,6 +32,23 @@ public enum SystemStateParser {
         return sawSettings ? false : nil
     }
 
+    /// What `sudo -n` prints on its own stderr when it would have to ask for a password. Any
+    /// other failure of a `sudo -n pmset ...` call is the command's own and never a denial.
+    public static let sudoDenialMarkers = ["a password is required", "a terminal is required"]
+
+    /// True when a `sudo -n <command>` result is sudo refusing to run without a password:
+    /// exit status 1 and a `sudo:` line naming one of the denial markers. A `pmset` that ran
+    /// as root and failed exits with its own status and its own stderr and is not a denial.
+    public static func isSudoDenial(_ result: CommandResult) -> Bool {
+        guard result.exitStatus == 1 else {
+            return false
+        }
+        return result.stderr.split(separator: "\n").contains { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            return line.hasPrefix("sudo:") && sudoDenialMarkers.contains { line.contains($0) }
+        }
+    }
+
     /// The text `launchctl print` and `bootout`/`bootstrap` print for a label that is not
     /// loaded in the domain.
     public static let launchctlNotFoundMarker = "Could not find service"
@@ -55,6 +72,12 @@ public enum SystemStateParser {
             }
         }
         return .unknown("launchctl print reported no state")
+    }
+
+    /// An `IOReturn` as the eight hex digits IOKit documents it with (`e00002bc`), never as a
+    /// negative number: the code is a signed 32-bit value whose high bit is set for errors.
+    public static func ioReturnHex(_ code: Int32) -> String {
+        String(UInt32(bitPattern: code), radix: 16)
     }
 
     /// The first line of a message, cut to a length that fits a menu row.

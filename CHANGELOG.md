@@ -70,25 +70,40 @@ The version lives in the `VERSION` file.
   privileges, released when toggled off and with the process; the choice is remembered and
   re-acquired at launch. `Stay awake with the lid closed` writes the system-wide `pmset`
   awake profile (`disablesleep 1`) as administrator and, when turned off, a fixed saver
-  profile; it tries the non-interactive `sudo -n` first and falls back to the native
-  administrator dialog (one dialog per profile), runs nothing but `pmset` with constant
-  arguments as root, and never creates, edits or recommends a password-free sudo rule.
+  profile; it tries the non-interactive `sudo -n` first, call by call, and tells sudo
+  refusing to run without a password (exit status 1 with sudo's `a password is required`
+  or `a terminal is required` on stderr) apart from `pmset` itself failing as root. Only
+  the denial opens the native administrator dialog, one per profile and only for the calls
+  sudo did not get to run; a `pmset` failure stops the profile at that call, opens no
+  dialog, re-runs nothing and shows the failing command line, exit status and message
+  under the toggle. It runs nothing but `pmset` with constant arguments as root, and never
+  creates, edits or recommends a password-free sudo rule.
   `iCloud Drive` and `iCloud Photos` are switched with `launchctl bootstrap`, `kickstart`
   and `bootout` in the `gui/<uid>` domain, `OneDrive` is launched hidden through
-  LaunchServices and asked to quit; these are immediate actions, nothing is stored for
-  them. Every checkmark shows the state read from the system when the menu opens and after
+  LaunchServices (its primary bundle identifier first, with the reason for that one shown
+  when every identifier fails) and asked to quit; these are immediate actions, nothing is
+  stored for them. Every checkmark shows the state read from the system when the menu opens and after
   each click, never a stored intention; a failed action leaves the checkmark as observed
   with the reason under the item.
 - Safety of the persistent setting: the menu warns under the toggle that it is
   system-wide, needs administrator rights and is restored when Restwatt quits. Restwatt
-  records that it turned `disablesleep 1` on, writes the saver profile back at quit, and
-  at launch when the record says on and `pmset -g` still shows `SleepDisabled 1` (the gap
-  a crash leaves). Every settings action runs on its own: a failure records its reason on
-  its toggle and never skips the rest, so the launch reset cannot be starved by a refused
-  power assertion, and a remembered assertion the system refuses is recorded as off. A
-  `SleepDisabled 1` set outside Restwatt is left alone and shown as `set outside
-  Restwatt`. Sync is not touched at launch or quit, so sync turned off stays off until it
-  is turned on again.
+  records that it is turning `disablesleep 1` on BEFORE `pmset` runs as root (write-ahead);
+  when the settings file cannot be saved, the awake profile is not written and the toggle
+  says `not written, the settings file could not be saved`. It writes the saver profile
+  back at quit, and at launch when the record says on and `pmset -g` still shows
+  `SleepDisabled 1` (the gap a crash, `kill` or Force Quit leaves, since those skip the
+  quit step). A record that is on while `pmset -g` shows `SleepDisabled 0` (the write never
+  landed, or somebody else reset it) is dropped quietly, at launch and after a click; a
+  record that is on while `pmset -g` cannot be read stays for the quit reconcile. Every
+  settings action runs on its own: a failure records its reason on its toggle and never
+  skips the rest, so the launch reset cannot be starved by a refused power assertion, and
+  a remembered assertion the system refuses at launch keeps its stored choice, shows off
+  with the reason and is tried again at the next launch. When `pmset -g` cannot be read,
+  turning the lid-closed toggle on is refused with `not written, could not read pmset` and
+  the reason; turning it off while Restwatt's record says on still writes the saver
+  profile. A `SleepDisabled 1` set outside Restwatt is left alone and shown as
+  `set outside Restwatt`. Sync is not touched at launch or quit, so sync turned off stays
+  off until it is turned on again.
 - Settings file `~/Library/Application Support/Restwatt/settings.json` holding the three
   awake choices and the "armed by Restwatt" flag, written atomically and only on change; a
   missing or unreadable file means everything off. This deliberately lifts the earlier
@@ -97,7 +112,9 @@ The version lives in the `VERSION` file.
   argument vectors for `pmset`, `launchctl`, `sudo` and `osascript`, parsers for `pmset -g`
   and `launchctl print`, reconcile decisions and coordinator. The tests pin the exact
   commands of the replaced scripts; repository checks require the README to name the
-  settings file and quote every `pmset` call, and no source file to name a shell.
+  settings file and quote every `pmset` call, and no source file to name a shell. A
+  refused IOKit power assertion is reported with its `IOReturn` as unsigned hex
+  (`e00002bc`), not as a negative number.
 - `RestwattCore` library with hardware-free unit tests, including repository consistency
   checks (version, sampling interval in the README, no em or en dashes).
 - `make app` and `scripts/make-app.sh` assembling an ad-hoc signed `dist/Restwatt.app`

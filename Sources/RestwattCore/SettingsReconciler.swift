@@ -3,16 +3,22 @@ import Foundation
 /// One step the coordinator performs. The reconciler decides the list; the coordinator runs
 /// every step and records each failure on its own toggle: no step is skipped because an
 /// unrelated earlier step failed (the crash-gap reset must not hang on an IOKit refusal).
-/// The only dependency there is, "armed follows the pmset write", lives inside one step:
-/// `writePmset` carries the armed flag and the coordinator sets it only when the write
-/// succeeded.
+/// The only dependency there is, "armed and the pmset write belong together", lives inside
+/// one step: `writePmset` carries the armed flag.
 public enum SettingsAction: Equatable, Sendable {
     case acquire(AwakeAssertion)
     case release(AwakeAssertion)
-    /// Writes the profile as root and, only on success, records `thenArmed`.
+    /// Writes the profile as root. `thenArmed: true` is write-ahead: the armed record is
+    /// persisted BEFORE the root write and the write is refused when the file cannot be
+    /// saved, so a crash in between leaves a record, never an unrecorded `disablesleep 1`.
+    /// `thenArmed: false` is recorded after the write succeeded, so a crash in between keeps
+    /// the record and the next launch takes the setting back again.
     case writePmset(PmsetProfile, thenArmed: Bool)
     /// Records the armed flag without a write (the system is already in the wanted state).
     case setArmed(Bool)
+    /// Refuses to write the awake profile because `SleepDisabled` could not be read; the text
+    /// is the reason the read failed and lands under the lid-closed toggle.
+    case refuseLidClosedWrite(String)
     case bootstrapAndKickstart(SyncService)
     case bootout(SyncService)
     case launchApplication(SyncService)
@@ -34,6 +40,8 @@ public enum SettingsReconciler {
             actions.append(.acquire(assertion))
         }
         guard stored.lidClosedAwakeArmedByRestwatt else {
+            // Not armed: a `SleepDisabled 1` is somebody else's (shown as set outside
+            // Restwatt), a `0` is nothing. Neither is touched.
             return actions
         }
         switch observedSleepDisabled {
@@ -41,13 +49,25 @@ public enum SettingsReconciler {
             // Restwatt armed it and did not get to reset it (crash, kill, power loss).
             actions.append(.writePmset(.saver, thenArmed: false))
         case .known(false):
-            // Somebody else already reset it; nothing to write.
-            actions.append(.setArmed(false))
+            // The write never landed (write-ahead record, then a refused or crashed write),
+            // or somebody else already reset it; nothing to write.
+            actions.append(contentsOf: settleActions(armed: true, observedSleepDisabled: observedSleepDisabled))
         case .unknown:
             // Cannot tell; leave armed so the quit reconcile tries again.
             break
         }
         return actions
+    }
+
+    /// The one rule launch and a finished click share: an armed record against an observed
+    /// `SleepDisabled 0` is a write that never landed or was taken back by somebody else, so
+    /// the record is dropped quietly. Any other combination is left to the caller.
+    public static func settleActions(armed: Bool,
+                                     observedSleepDisabled: Observation<Bool>) -> [SettingsAction] {
+        guard armed, observedSleepDisabled == .known(false) else {
+            return []
+        }
+        return [.setArmed(false)]
     }
 
     /// At quit: take back what Restwatt set, unless it is already reset.
@@ -62,15 +82,27 @@ public enum SettingsReconciler {
         return [.writePmset(.saver, thenArmed: false)]
     }
 
-    /// A click on a toggle that currently shows `currentlyOn`.
-    public static func toggleActions(key: SettingKey, currentlyOn: Bool) -> [SettingsAction] {
+    /// A click on a toggle, judged against the snapshot the menu was rendered from.
+    public static func toggleActions(key: SettingKey, snapshot: SettingsSnapshot) -> [SettingsAction] {
+        let currentlyOn = snapshot.isOn(key)
         switch key {
         case .awake(let assertion):
             return [currentlyOn ? .release(assertion) : .acquire(assertion)]
         case .lidClosedAwake:
-            return currentlyOn
-                ? [.writePmset(.saver, thenArmed: false)]
-                : [.writePmset(.awake, thenArmed: true)]
+            switch snapshot.sleepDisabled {
+            case .known(true):
+                return [.writePmset(.saver, thenArmed: false)]
+            case .known(false):
+                return [.writePmset(.awake, thenArmed: true)]
+            case .unknown(let reason):
+                // The checkmark shows off because nothing could be read. Writing the awake
+                // profile blind could never be switched off from the menu again, so it is
+                // refused. Turning off is the safe direction and stays allowed: when Restwatt
+                // itself armed the setting, the click takes it back.
+                return snapshot.armedByRestwatt
+                    ? [.writePmset(.saver, thenArmed: false)]
+                    : [.refuseLidClosedWrite(reason)]
+            }
         case .sync(let service):
             if service.isLaunchdService {
                 return [currentlyOn ? .bootout(service) : .bootstrapAndKickstart(service)]

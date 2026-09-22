@@ -259,7 +259,14 @@ final class ScriptedCommandRunner: CommandRunning {
     var privilegedPmsetVectors: [CommandVector] = []
 
     var sudoPasswordless = true
+    /// When set, `sudo -n` runs this many pmset vectors and denies the next one: the
+    /// passwordless rule ran out mid-profile (a timestamp expiring, a rule per command).
+    var sudoDeniesAfter: Int?
+    private var sudoGranted = 0
     var administratorDialogAccepted = true
+    /// pmset keys the simulated hardware refuses: the call exits 1 with pmset's own stderr,
+    /// through sudo and inside the dialog alike.
+    var pmsetRefusedKeys: Set<String> = []
     /// Nil makes `pmset -g` fail.
     var sleepDisabled: Bool? = false
     var pmsetPrintsLineWhenZero = true
@@ -280,9 +287,10 @@ final class ScriptedCommandRunner: CommandRunning {
             guard args.count > 2, args[0] == "-n", args[1] == SystemCommands.pmset else {
                 return unscripted(vector)
             }
-            if !sudoPasswordless {
+            if !sudoPasswordless || sudoDeniesAfter.map({ sudoGranted >= $0 }) == true {
                 return CommandResult(exitStatus: 1, stderr: "sudo: a password is required\n")
             }
+            sudoGranted += 1
             return applyPmset(CommandVector(args[1], Array(args[2...])))
 
         case SystemCommands.osascript:
@@ -292,13 +300,20 @@ final class ScriptedCommandRunner: CommandRunning {
             if !administratorDialogAccepted {
                 return CommandResult(exitStatus: 1, stderr: "execution error: User canceled. (-128)\n")
             }
-            for profile in PmsetProfile.allCases
-            where (try? SystemCommands.administratorScriptSource(profile.vectors)) == args[1] {
-                var last = CommandResult(exitStatus: 0)
-                for pmsetVector in profile.vectors {
-                    last = applyPmset(pmsetVector)
+            // The dialog may carry a whole profile or the tail of one; `&&` stops at the
+            // first failing call and osascript reports that failure.
+            for profile in PmsetProfile.allCases {
+                for start in profile.vectors.indices
+                where (try? SystemCommands.administratorScriptSource(Array(profile.vectors[start...]))) == args[1] {
+                    for pmsetVector in profile.vectors[start...] {
+                        let result = applyPmset(pmsetVector)
+                        if !result.succeeded {
+                            return CommandResult(exitStatus: result.exitStatus,
+                                                 stderr: "execution error: \(result.stderr.trimmingCharacters(in: .newlines)) (\(result.exitStatus))\n")
+                        }
+                    }
+                    return CommandResult(exitStatus: 0)
                 }
-                return last
             }
             return unscripted(vector)
 
@@ -324,8 +339,11 @@ final class ScriptedCommandRunner: CommandRunning {
     }
 
     private func applyPmset(_ vector: CommandVector) -> CommandResult {
-        privilegedPmsetVectors.append(vector)
         let args = vector.arguments
+        if let refused = args.first(where: pmsetRefusedKeys.contains) {
+            return CommandResult(exitStatus: 1, stderr: "pmset: \(refused) is not supported on this system\n")
+        }
+        privilegedPmsetVectors.append(vector)
         if let index = args.firstIndex(of: "disablesleep"), index + 1 < args.count {
             sleepDisabled = args[index + 1] == "1"
         }
@@ -380,6 +398,9 @@ final class MemorySettingsStore: SettingsStoring {
     var stored: StoredSettings?
     var saveError: String?
     var saveCount = 0
+    /// Called with every settings the coordinator hands over, before the outcome; lets a
+    /// test pin the order of a save against other calls.
+    var onSave: ((StoredSettings) -> Void)?
 
     init(_ stored: StoredSettings? = nil) {
         self.stored = stored
@@ -391,6 +412,7 @@ final class MemorySettingsStore: SettingsStoring {
 
     func save(_ settings: StoredSettings) throws {
         saveCount += 1
+        onSave?(settings)
         if let saveError {
             throw SettingsFailure(saveError)
         }

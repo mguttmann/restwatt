@@ -104,6 +104,33 @@ final class SystemStateParserTests: XCTestCase {
         XCTAssertEqual(SystemStateParser.parseLaunchctlPrint(result), .unknown("launchctl print reported no state"))
     }
 
+    // MARK: sudo denial vs command failure (ticket 6, M2)
+
+    func testSudoRefusingWithoutAPasswordIsADenial() {
+        XCTAssertTrue(SystemStateParser.isSudoDenial(CommandResult(exitStatus: 1, stderr: "sudo: a password is required\n")))
+        XCTAssertTrue(SystemStateParser.isSudoDenial(CommandResult(
+            exitStatus: 1,
+            stderr: "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper\n")))
+    }
+
+    func testAPmsetFailureUnderSudoIsNotADenial() {
+        XCTAssertFalse(SystemStateParser.isSudoDenial(CommandResult(exitStatus: 1, stderr: "pmset: hibernatemode is not supported on this system\n")))
+        XCTAssertFalse(SystemStateParser.isSudoDenial(CommandResult(exitStatus: 1, stderr: "Usage: pmset <options>\n")))
+        XCTAssertFalse(SystemStateParser.isSudoDenial(CommandResult(exitStatus: 2, stderr: "sudo: a password is required\n")), "sudo denies with exit 1")
+        XCTAssertFalse(SystemStateParser.isSudoDenial(CommandResult(exitStatus: 1)), "silence is not a denial")
+        XCTAssertFalse(SystemStateParser.isSudoDenial(CommandResult(exitStatus: 0, stderr: "sudo: a password is required\n")))
+        XCTAssertFalse(SystemStateParser.isSudoDenial(CommandResult(exitStatus: 1, stderr: "pmset: a password is required\n")), "the sudo: prefix is part of the marker")
+    }
+
+    /// Ticket 6 minor: `kIOReturnNoMemory` style codes have the high bit set and rendered as
+    /// a negative hex string before; the eight IOKit digits are what the fixture shows.
+    func testIOReturnRendersAsUnsignedHex() {
+        XCTAssertEqual(SystemStateParser.ioReturnHex(Int32(bitPattern: 0xe00002bc)), "e00002bc")
+        XCTAssertEqual(SystemStateParser.ioReturnHex(-536870212), "e00002bc")
+        XCTAssertEqual(SystemStateParser.ioReturnHex(0), "0")
+        XCTAssertFalse(SystemStateParser.ioReturnHex(Int32.min).hasPrefix("-"))
+    }
+
     func testHeadTakesTheFirstLineAndCutsLongText() {
         XCTAssertEqual(SystemStateParser.head("  first line \nsecond"), "first line")
         XCTAssertEqual(SystemStateParser.head(String(repeating: "x", count: 200)).count, 120)

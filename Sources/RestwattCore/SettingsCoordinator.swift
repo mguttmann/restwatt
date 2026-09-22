@@ -40,8 +40,11 @@ public protocol ApplicationControlling {
     func requestQuit(bundleIdentifier: String) throws
 }
 
-/// Writes a pmset profile as root: the passwordless `sudo -n` first, the administrator dialog
-/// only when that is refused. Nothing but `pmset` with fixed keys ever runs as root.
+/// Writes a pmset profile as root: the passwordless `sudo -n` first, vector by vector; the
+/// administrator dialog only when sudo itself refuses, and only for the vectors not yet
+/// applied. A vector that ran as root and failed stops the profile with its own stderr: no
+/// dialog for a command line that would fail again, no re-run of applied vectors. Nothing
+/// but `pmset` with fixed keys ever runs as root.
 public struct PrivilegedRunner {
     private let commands: CommandRunning
 
@@ -51,20 +54,24 @@ public struct PrivilegedRunner {
 
     public func write(_ profile: PmsetProfile) -> Result<Void, PrivilegeError> {
         let vectors = profile.vectors
-        var silentFailure: CommandResult?
-        for vector in vectors {
+        var remaining = vectors[...]
+        while let vector = remaining.first {
             let result = commands.run(SystemCommands.sudoNonInteractive(vector))
-            if !result.succeeded {
-                silentFailure = result
+            if result.succeeded {
+                remaining.removeFirst()
+                continue
+            }
+            if SystemStateParser.isSudoDenial(result) {
                 break
             }
+            return .failure(.commandFailed(vector, exitStatus: result.exitStatus, message: Self.text(of: result)))
         }
-        guard silentFailure != nil else {
+        guard !remaining.isEmpty else {
             return .success(())
         }
         let script: CommandVector
         do {
-            script = try SystemCommands.administratorScript(vectors)
+            script = try SystemCommands.administratorScript(Array(remaining))
         } catch let error as PrivilegeError {
             return .failure(error)
         } catch {
@@ -74,8 +81,16 @@ public struct PrivilegedRunner {
         if result.succeeded {
             return .success(())
         }
+        return .failure(.declinedOrFailed(Self.text(of: result, fallback: "administrator dialog")))
+    }
+
+    /// The head of stderr, else of stdout, else the exit status.
+    private static func text(of result: CommandResult, fallback: String = "") -> String {
         let text = result.stderr.isEmpty ? result.stdout : result.stderr
-        return .failure(.declinedOrFailed(SystemStateParser.head(text.isEmpty ? "administrator dialog exit \(result.exitStatus)" : text)))
+        if text.isEmpty {
+            return "\(fallback.isEmpty ? "" : fallback + " ")exit \(result.exitStatus)"
+        }
+        return SystemStateParser.head(text)
     }
 }
 
@@ -130,10 +145,15 @@ public final class SettingsCoordinator {
         snapshot.armedByRestwatt = stored.lidClosedAwakeArmedByRestwatt
     }
 
-    /// A click on the toggle: performs its actions, then re-reads the state.
+    /// A click on the toggle: performs its actions, re-reads the state, then settles the
+    /// armed record against it (a write-ahead record whose write did not land is dropped).
     public func toggle(_ key: SettingKey) {
-        perform(SettingsReconciler.toggleActions(key: key, currentlyOn: snapshot.isOn(key)))
+        perform(SettingsReconciler.toggleActions(key: key, snapshot: snapshot))
         refreshObserved()
+        // Bookkeeping, not an action of its own: the reason the click failed stays visible.
+        perform(SettingsReconciler.settleActions(armed: stored.lidClosedAwakeArmedByRestwatt,
+                                                 observedSleepDisabled: snapshot.sleepDisabled),
+                clearingErrors: false)
     }
 
     /// Takes back the lid-closed setting if Restwatt armed it. The assertions need no work:
@@ -150,13 +170,15 @@ public final class SettingsCoordinator {
 
     /// Runs every action and records each outcome on its own toggle. A failure never stops
     /// the list: the actions are independent of each other, and the one dependency that
-    /// exists (armed follows a successful pmset write) is inside `.writePmset` itself.
-    private func perform(_ actions: [SettingsAction]) {
+    /// exists (armed and the pmset write belong together) is inside `.writePmset` itself.
+    private func perform(_ actions: [SettingsAction], clearingErrors: Bool = true) {
         for action in actions {
             let key = Self.key(of: action)
             switch execute(action) {
             case .success:
-                snapshot.lastError[key] = nil
+                if clearingErrors {
+                    snapshot.lastError[key] = nil
+                }
             case .failure(let failure):
                 snapshot.lastError[key] = failure.reason
             }
@@ -168,7 +190,7 @@ public final class SettingsCoordinator {
         switch action {
         case .acquire(let assertion), .release(let assertion):
             return .awake(assertion)
-        case .writePmset, .setArmed:
+        case .writePmset, .setArmed, .refuseLidClosedWrite:
             return .lidClosedAwake
         case .bootstrapAndKickstart(let service), .bootout(let service),
              .launchApplication(let service), .quitApplication(let service):
@@ -187,11 +209,9 @@ public final class SettingsCoordinator {
                 stored.awake[assertion] = true
                 return .success(())
             } catch {
-                // A remembered choice the system refuses is no longer remembered as on; a
-                // refused click from off changes nothing, so no file appears for it.
-                if stored.isOn(assertion) {
-                    stored.awake[assertion] = false
-                }
+                // The stored choice stays as it is: a remembered assertion the system refuses
+                // right now shows off with the reason and is tried again at the next launch;
+                // a refused click from off changes nothing, so no file appears for it.
                 return .failure(Self.failure(error))
             }
 
@@ -203,6 +223,17 @@ public final class SettingsCoordinator {
             return .success(())
 
         case .writePmset(let profile, let armed):
+            if armed, !stored.lidClosedAwakeArmedByRestwatt {
+                // Write-ahead: the record goes to disk before root touches pmset. Without the
+                // record there is no write, or a crash in between would leave a
+                // `disablesleep 1` nobody takes back.
+                stored.lidClosedAwakeArmedByRestwatt = true
+                if let failure = saveIfChanged() {
+                    stored.lidClosedAwakeArmedByRestwatt = false
+                    return .failure(SettingsFailure("not written, the settings file could not be saved: \(failure.reason)"))
+                }
+                snapshot.armedByRestwatt = true
+            }
             switch privileged.write(profile) {
             case .success:
                 stored.lidClosedAwakeArmedByRestwatt = armed
@@ -210,6 +241,8 @@ public final class SettingsCoordinator {
                 return .success(())
             case .failure(.declinedOrFailed(let reason)):
                 return .failure(SettingsFailure(reason))
+            case .failure(.commandFailed(let vector, let exitStatus, let message)):
+                return .failure(SettingsFailure("\(vector.commandLine) exit \(exitStatus): \(message)"))
             case .failure(.invalidToken(let token)):
                 return .failure(SettingsFailure("refused to run token \(token)"))
             }
@@ -218,6 +251,9 @@ public final class SettingsCoordinator {
             stored.lidClosedAwakeArmedByRestwatt = armed
             snapshot.armedByRestwatt = armed
             return .success(())
+
+        case .refuseLidClosedWrite(let reason):
+            return .failure(SettingsFailure("not written, could not read pmset: \(reason)"))
 
         case .bootstrapAndKickstart(let service):
             guard let bootstrap = SystemCommands.launchctlBootstrap(service, uid: uid),
@@ -237,16 +273,18 @@ public final class SettingsCoordinator {
             return checkServiceState(service, wanted: false, results: [result])
 
         case .launchApplication(let service):
-            var lastError: Error?
+            // The primary bundle identifier's error is the one worth showing; the others are
+            // fallbacks for a differently packaged build.
+            var primaryError: Error?
             for identifier in service.bundleIdentifiers {
                 do {
                     try applications.launchHidden(bundleIdentifier: identifier)
                     return .success(())
                 } catch {
-                    lastError = error
+                    primaryError = primaryError ?? error
                 }
             }
-            return .failure(lastError.map(Self.failure) ?? SettingsFailure("\(service.label) has no bundle identifier"))
+            return .failure(primaryError.map(Self.failure) ?? SettingsFailure("\(service.label) has no bundle identifier"))
 
         case .quitApplication(let service):
             var quitOne = false
@@ -306,17 +344,21 @@ public final class SettingsCoordinator {
     // MARK: Store
 
     /// Writes the file only when something changed, so a launch that toggles nothing leaves
-    /// no file behind.
-    private func saveIfChanged() {
+    /// no file behind. Returns the failure so a write-ahead step can refuse to go on.
+    @discardableResult
+    private func saveIfChanged() -> SettingsFailure? {
         guard stored != persisted else {
-            return
+            return nil
         }
         do {
             try store.save(stored)
             persisted = stored
             snapshot.storeError = nil
+            return nil
         } catch {
-            snapshot.storeError = Self.failure(error).reason
+            let failure = Self.failure(error)
+            snapshot.storeError = failure.reason
+            return failure
         }
     }
 }

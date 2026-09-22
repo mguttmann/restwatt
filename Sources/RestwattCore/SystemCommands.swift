@@ -50,9 +50,12 @@ public enum PmsetProfile: Equatable, Sendable, CaseIterable {
 }
 
 public enum PrivilegeError: Error, Equatable, Sendable {
-    /// Neither the non-interactive sudo nor the administrator dialog ran the profile; the
-    /// text is the head of what the last attempt reported.
+    /// `sudo -n` was denied and the administrator dialog did not run the remaining vectors;
+    /// the text is the head of what the dialog reported (cancel, or the failing command).
     case declinedOrFailed(String)
+    /// `sudo -n` ran the vector as root and `pmset` itself refused it. The profile stops at
+    /// this vector; the vectors before it stay applied, no dialog opens.
+    case commandFailed(CommandVector, exitStatus: Int32, message: String)
     /// A token would not survive being quoted into a shell script. Cannot happen with the
     /// constants in this file; guards future edits.
     case invalidToken(String)
@@ -115,9 +118,10 @@ public enum SystemCommands {
         CommandVector(sudo, ["-n", vector.executable] + vector.arguments)
     }
 
-    /// The native administrator dialog: one `do shell script` that chains every vector of the
-    /// profile with `&&`, so a profile costs one dialog. Only `administrator privileges` is
-    /// used; the `user name` and `password` parameters never are.
+    /// The native administrator dialog: one `do shell script` that chains the given vectors
+    /// (the part of a profile `sudo -n` did not get to run) with `&&`, so a profile costs one
+    /// dialog. Only `administrator privileges` is used; the `user name` and `password`
+    /// parameters never are.
     public static func administratorScript(_ vectors: [CommandVector]) throws -> CommandVector {
         CommandVector(osascript, ["-e", try administratorScriptSource(vectors)])
     }

@@ -83,6 +83,13 @@ final class SystemCommandsTests: XCTestCase {
                        + "hibernatemode 0 standby 0 disablesleep 1\" with administrator privileges")
     }
 
+    /// Ticket 6 (M2): the dialog carries only the vectors sudo did not run.
+    func testAdministratorScriptForTheTailOfAProfile() throws {
+        let source = try SystemCommands.administratorScriptSource(Array(SystemCommands.pmsetSaverProfile[2...]))
+        XCTAssertEqual(source, "do shell script \"/usr/bin/pmset -c displaysleep 10 sleep 30 disksleep 10 hibernatemode 3 standby 1 && "
+                       + "/usr/bin/pmset -a standbydelaylow 10800 standbydelayhigh 86400\" with administrator privileges")
+    }
+
     func testTokenValidationRefusesShellMetacharacters() {
         for bad in ["a b", "x\"y", "a;b", "$HOME", "", "a'b", "a\nb", "a&&b", "`id`"] {
             XCTAssertThrowsError(try SystemCommands.validatedToken(bad), "accepted \(bad.debugDescription)") { error in
