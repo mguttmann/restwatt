@@ -19,6 +19,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     static let hideDelay: TimeInterval = 0.3
 
     private let statusItem: NSStatusItem
+    private let settings: SettingsCoordinator
     private let menu = NSMenu()
     private let popover = DetailPopover()
     private var hoverTimer: Timer?
@@ -32,7 +33,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }()
 
-    override init() {
+    init(settings: SettingsCoordinator) {
+        self.settings = settings
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         menu.delegate = self
@@ -146,7 +148,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     /// The menu is rebuilt from the latest model each time it opens. Information items stay
     /// enabled (no action, so selecting one only closes the menu) to be drawn in the normal
-    /// label colour instead of the disabled grey.
+    /// label colour instead of the disabled grey. The settings section is rendered from the
+    /// system state read right now, so its checkmarks never show a stale or intended state.
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
         cancelHoverTimer()
@@ -162,6 +165,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 item.indentationLevel = row.emphasis == .heading ? 0 : 1
                 menu.addItem(item)
             }
+        }
+        menu.addItem(.separator())
+        settings.refreshObserved()
+        for row in Formatting.settingsRows(settings.snapshot) {
+            menu.addItem(menuItem(for: row))
         }
         menu.addItem(.separator())
         menu.addItem(Self.menuItem(for: DetailRow("Restwatt \(version)")))
@@ -192,7 +200,64 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return item
     }
 
+    /// A settings row: toggles carry the key in `representedObject` and a checkmark state;
+    /// notes and warnings are indented, action-free lines like the process list entries.
+    private func menuItem(for row: SettingsRow) -> NSMenuItem {
+        let size = NSFont.systemFontSize
+        switch row.kind {
+        case .heading:
+            let item = NSMenuItem(title: row.label, action: nil, keyEquivalent: "")
+            item.isEnabled = true
+            item.attributedTitle = NSAttributedString(
+                string: row.label, attributes: [.font: NSFont.systemFont(ofSize: size, weight: .regular)])
+            return item
+        case .toggle(let key, let isOn):
+            let item = NSMenuItem(title: row.label, action: #selector(toggleSetting(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = SettingKeyBox(key)
+            item.state = isOn ? .on : .off
+            item.indentationLevel = 1
+            if !row.detail.isEmpty {
+                let title = NSMutableAttributedString(
+                    string: row.label, attributes: [.font: NSFont.systemFont(ofSize: size, weight: .regular)])
+                title.append(NSAttributedString(string: "  "))
+                title.append(NSAttributedString(
+                    string: row.detail,
+                    attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .regular),
+                                 .foregroundColor: NSColor.secondaryLabelColor]))
+                item.attributedTitle = title
+            }
+            return item
+        case .note, .warning:
+            let item = NSMenuItem(title: row.label, action: nil, keyEquivalent: "")
+            item.isEnabled = true
+            item.indentationLevel = 2
+            let colour: NSColor = row.kind == .warning ? .systemOrange : .secondaryLabelColor
+            item.attributedTitle = NSAttributedString(
+                string: row.label,
+                attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                             .foregroundColor: colour])
+            return item
+        }
+    }
+
+    @objc private func toggleSetting(_ sender: NSMenuItem) {
+        guard let box = sender.representedObject as? SettingKeyBox else {
+            return
+        }
+        settings.toggle(box.key)
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+}
+
+/// `representedObject` needs a class; the key itself is a value type in the core.
+private final class SettingKeyBox: NSObject {
+    let key: SettingKey
+
+    init(_ key: SettingKey) {
+        self.key = key
     }
 }

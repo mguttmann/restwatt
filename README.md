@@ -4,10 +4,12 @@ A small, native macOS menu bar app that shows how much power your Mac is drawing
 its battery right now, how long the battery will last at that rate, and which of your
 processes are burning the most energy. While the battery charges it shows the charging
 power and its own time to full instead. Both estimates start from the current value and
-get steadier the longer the app runs.
+get steadier the longer the app runs. Its click menu also carries a few settings: keep
+the Mac, its display or its disk awake while Restwatt runs, keep the Mac awake with the
+lid closed, and start or stop iCloud Drive, iCloud Photos and OneDrive syncing.
 
 Pure Swift on AppKit, IOKit and libproc. No Electron, no web view, no dependencies, no
-network, nothing written to disk.
+network. The one file it writes is its settings file (see "What it can do" and "Privacy").
 
 ## What it shows
 
@@ -90,10 +92,125 @@ automated test, so please open an issue if the popover does not appear or does n
 away for you.
 
 **Click** on the item opens a menu with the same rows, the top five processes, the
-version number and `Quit Restwatt`. The information lines are drawn in the normal label
+settings section described under "What it can do", the version number and
+`Quit Restwatt`. The information lines are drawn in the normal label
 colour (they are enabled menu items without an action; selecting one only closes the
 menu). The menu is rebuilt from the latest sample each time it opens, and Cmd-Q inside
 the menu quits.
+
+## What it can do
+
+The click menu ends with a settings section: two headings with checkmark items under
+them. It replaces two shell scripts that used to switch the same things by hand. Every
+checkmark shows the state Restwatt reads from the system when the menu opens and again
+after each click (the assertion it holds, `pmset -g`, `launchctl print`, the running
+applications), never a stored intention: a click that did not take effect leaves the
+checkmark where it was and puts the reason in an indented line under the item.
+
+```
+Power
+    [x] Keep awake
+    [ ] Keep display awake
+    [ ] Keep disk awake
+    [x] Stay awake with the lid closed
+        system-wide, needs administrator, restored when Restwatt quits
+Sync
+    [x] iCloud Drive  running
+    [x] iCloud Photos  idle, starts on demand
+    [ ] OneDrive  not running
+```
+
+**Keep awake**, **Keep display awake** and **Keep disk awake** are process-scoped. Each
+holds one IOKit power assertion in Restwatt's own process (`PreventUserIdleSystemSleep`,
+`PreventUserIdleDisplaySleep`, `PreventDiskIdle`, the mechanism `caffeinate` uses),
+needs no privileges, and appears in `pmset -g assertions` as `Restwatt: Keep awake` and
+so on while it is held. Turning a toggle off releases the assertion; quitting or killing
+Restwatt releases every assertion with the process, so these three cannot outlive the
+app. The choice is remembered in the settings file and re-acquired at the next launch.
+If the system refuses one of them at launch, that toggle shows off with the reason under
+it, the other remembered toggles are acquired all the same, and the refused choice is
+recorded as off so the file never claims more than the menu shows.
+`Keep awake` prevents idle sleep only: closing the lid still puts the Mac to sleep. If
+you run a LaunchAgent of your own that keeps `caffeinate -d` alive, `Keep display awake`
+is redundant with it; Restwatt leaves such an agent alone and neither loads nor unloads
+it.
+
+**Stay awake with the lid closed** is different: it is a system setting, it needs
+administrator rights, and it survives the app. Turning it on runs
+
+```
+pmset -a sleep 0 displaysleep 0 disksleep 0 hibernatemode 0 standby 0 disablesleep 1
+```
+
+and turning it off runs, in this order,
+
+```
+pmset -a disablesleep 0
+pmset -b displaysleep 2 sleep 10 disksleep 10 hibernatemode 3 standby 1
+pmset -c displaysleep 10 sleep 30 disksleep 10 hibernatemode 3 standby 1
+pmset -a standbydelaylow 10800 standbydelayhigh 86400
+```
+
+The "off" values are one chosen saver profile (the one the replaced script wrote), not a
+captured factory default and not whatever your Mac had before: Restwatt does not save or
+restore earlier `pmset` values. Both command lines are constants in `RestwattCore` and
+the unit tests pin them word for word, so the text above cannot drift from the code. To
+run `pmset` as root, Restwatt first tries `sudo -n pmset ...`, which succeeds only when
+sudo needs no password for your account and fails at once otherwise; when it fails,
+Restwatt shows the native macOS administrator dialog (`osascript`, `do shell script ...
+with administrator privileges`) once per profile, chaining the calls of the profile into
+that single dialog. Nothing but `pmset` with these fixed arguments ever runs with
+administrator rights, no command line is built from user data, and Restwatt never
+creates, edits or recommends a rule that lets sudo skip the password. Cancelling the
+dialog, or any other failure, leaves the checkmark off, as observed, with the reason
+under the item.
+
+Two safety facts, stated plainly:
+
+1. **The lid-closed setting outlives the app, so Restwatt takes it back.** The menu says
+   so under the toggle. When Restwatt quits normally (`Quit Restwatt` or Cmd-Q) while it
+   had turned the setting on, it writes the saver profile first (on a Mac where sudo asks
+   for a password that is one administrator dialog at quit; cancelling it leaves the
+   setting on, and Restwatt remembers that it still owes the reset). A crash, a `kill`
+   or a Force Quit skips that step, and the Mac stays unable to sleep until Restwatt runs
+   again: at every launch Restwatt checks its settings file, and if it recorded that it
+   turned the setting on and `pmset -g` still shows `SleepDisabled 1`, it writes the
+   saver profile then. That launch write does not depend on anything else Restwatt does
+   at launch; a power assertion the system refuses to re-acquire does not skip it.
+   Restwatt only ever takes back what it set itself. A `SleepDisabled 1` that another
+   tool or script set is left alone and shown as on with the note `set outside
+   Restwatt`; turning that toggle off by hand writes the saver profile all the same. The
+   record, not the last writer, decides: if you turn the toggle on in Restwatt and then
+   run your own `pmset` script on top, Restwatt still writes the saver profile at quit.
+   So the toggle effectively means "while Restwatt runs"; for a Mac that stays awake
+   without Restwatt, use `pmset` yourself.
+2. **Sync off stays off until something turns it on.** `iCloud Drive` (`com.apple.bird`)
+   and `iCloud Photos` (`com.apple.cloudphotod`) are switched with `launchctl bootstrap`
+   plus `kickstart` and with `launchctl bootout` in your login session domain
+   (`gui/<uid>`); `OneDrive` is started hidden and without activating it through
+   LaunchServices (what `open -gja OneDrive` does) and stopped by the quit request the
+   running application receives. These are immediate actions on the running system.
+   Restwatt does not store the sync choice and does not touch sync at launch or quit, so
+   once Restwatt is gone the services stay in whatever state they were left in. The
+   menu shows that state to the right of each item (`running`, `idle, starts on demand`,
+   `off`, `not running`), read from `launchctl print` and the list of running
+   applications. To get sync back, click the item again or run `launchctl bootstrap`
+   yourself; launchd is also expected to load the two system agents again at the next
+   login, but that comes from the `launchctl` manual and was not measured. `bootout`
+   does not disable a service, so a reboot or re-login does not keep sync off either.
+
+A few practical notes. Starting OneDrive and asking it to quit both return before the
+application has finished, so right after the click the checkmark can still show the old
+state; it is read again when the menu opens next. Whether a `launchctl` call succeeded is
+judged by the state read back afterwards, not by its exit code (the exit codes appear in
+the reason line only when the target state was not reached). If the settings file cannot
+be written, the action still happens and a line at the bottom of the section says
+`settings could not be saved` with the reason. If `pmset -g` cannot be read, the
+lid-closed toggle shows off with `could not read pmset` and the reason, and nothing is
+written. The privileged path, the `launchctl` switching and the OneDrive control were
+tested against doubles that pin the exact commands and simulate the resulting system
+state; they were not exercised against a live system during development, and clicking
+the items is not automated. Please open an issue if a toggle misbehaves on your Mac.
 
 ## How the estimate works
 
@@ -133,8 +250,8 @@ more often than the gauge refreshes does not distort the average. The smoothing 
 whenever the shown state changes: when the direction of the flow flips between draining
 and charging, when a weak source is plugged into a Mac running on battery (the draw
 changes meaning from "whole system" to "what the source does not cover"), and around a
-plug or unplug event. Nothing is persisted: the estimate lives for one session of the
-app.
+plug or unplug event. Nothing about the estimate is persisted: it lives for one session
+of the app (the settings are the one thing Restwatt stores, see "What it can do").
 
 Below a power of 0.1 W no time is shown in either direction. Times above 5999 minutes
 are shown as `> 99 h`.
@@ -219,8 +336,10 @@ signature and no notarization: Gatekeeper may ask you to confirm the first launc
 (right-click the app, choose Open, or allow it under System Settings > Privacy &
 Security).
 
-Quit the app from its menu (`Quit Restwatt`). There is no login item; add it to your
-Login Items in System Settings yourself if you want it at startup.
+Quit the app from its menu (`Quit Restwatt`). Quitting also takes back `Stay awake with
+the lid closed` if Restwatt had turned it on (see "What it can do"); on a Mac where sudo
+asks for a password that shows the administrator dialog once. There is no login item; add
+it to your Login Items in System Settings yourself if you want it at startup.
 
 ## Footprint
 
@@ -234,7 +353,26 @@ background work between ticks. Measured with `ps -o %cpu,rss,cputime` on the ass
 ## Privacy
 
 - No network access, no telemetry, no analytics, no crash reporting.
-- Nothing is written to disk. There is no preferences file and no history.
+- The only file Restwatt writes is `~/Library/Application Support/Restwatt/settings.json`,
+  and only once a setting changes (a launch that touches nothing leaves no file behind).
+  It holds the on/off choice of the three `Keep ... awake` toggles and the flag that
+  Restwatt itself turned on `Stay awake with the lid closed`; a missing or unreadable file
+  means everything off. Nothing else is stored: no history, no sync choice, no
+  measurement. Deleting the file resets the settings; do it while `Stay awake with the
+  lid closed` is off, because the file is also where Restwatt remembers that it owes the
+  saver profile, and without it the next launch treats a `SleepDisabled 1` as set
+  outside Restwatt and takes nothing back.
+- Restwatt changes the system only when you click a setting, plus the two safety writes
+  described under "What it can do" (the saver profile at quit and at launch, only when
+  Restwatt itself had turned the lid-closed setting on). It runs `pmset` as administrator
+  for that toggle, `launchctl bootstrap`, `kickstart` and `bootout` in your own login
+  session domain for iCloud Drive and iCloud Photos, and launches or asks OneDrive to quit
+  through LaunchServices. Nothing else runs with administrator rights. Restwatt itself
+  starts no shell: it launches `sudo`, `pmset`, `launchctl` and `osascript` directly with
+  fixed argument lists. The one place a shell runs is inside the administrator dialog,
+  where macOS executes the fixed `pmset` line through `do shell script`; every token of
+  that line is checked against a fixed alphabet before it is used, and every command
+  line is built from constants in the source.
 - From the battery registry entry only these keys are used: `UpdateTime`, `Voltage`,
   `Amperage`, `CurrentCapacity`, `IsCharging`, `ExternalConnected`, `FullyCharged`,
   `AvgTimeToEmpty`, `AvgTimeToFull`, inside `BatteryData` the keys `BatteryPower`,
@@ -261,13 +399,23 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   Formatting.swift                 every user-visible string
   PointerRegionTracker.swift       pointer enter/leave transitions for the menu bar item
   DetailRow.swift                  label/value rows for the popover and the menu
+  PowerSettings.swift              settings model, sync services, stored settings, JSON codec
+  SystemCommands.swift             fixed pmset, launchctl, sudo and osascript argument vectors
+  SystemStateParser.swift          parsers for pmset -g and launchctl print
+  SettingsReconciler.swift         stored fact vs observed state -> actions (launch, quit, click)
+  SettingsCoordinator.swift        runs the actions behind protocols, owns the settings snapshot
+  SettingsRow.swift                the settings section rows of the click menu
 Sources/RestwattApp/               the menu bar app
   main.swift                       NSApplication bootstrap, accessory activation policy
-  AppDelegate.swift                timer, power-source notification, wiring
-  StatusItemController.swift       NSStatusItem title, pointer monitor, hover popover, click menu
+  AppDelegate.swift                timer, power-source notification, settings reconcile, wiring
+  StatusItemController.swift       NSStatusItem title, pointer monitor, popover, menu with settings
   DetailPopover.swift              NSPopover with the detail rows in a two-column grid
   IOKitBatteryReader.swift         AppleSmartBattery registry and IOPowerSources
   LibprocProcessReader.swift       proc_listallpids and proc_pid_rusage (RUSAGE_INFO_V6)
+  IOKitPowerAssertions.swift       IOPMAssertionCreateWithName and IOPMAssertionRelease
+  ProcessCommandRunner.swift       Process with a fixed executable and arguments, no shell
+  WorkspaceApplicationController.swift  NSWorkspace launch and NSRunningApplication quit request
+  FileSettingsStore.swift          settings.json under Application Support, atomic writes
 Tests/RestwattCoreTests/           XCTest suite; runs without a battery or privileges
 packaging/Info.plist.template      bundle metadata, version filled in from VERSION
 scripts/make-app.sh                assembles and ad-hoc signs dist/Restwatt.app
@@ -284,18 +432,25 @@ swift build
 swift test
 ```
 
-`RestwattCore` has no AppKit or IOKit import; hardware and process access sit behind the
-`BatteryReading`, `ProcessReading` and `ClockReading` protocols with test doubles, so the
-tests run on any Mac and on CI. The suite pins the menu bar strings and detail rows of
+`RestwattCore` has no AppKit or IOKit import; hardware, process and system access sit
+behind the `BatteryReading`, `ProcessReading`, `ClockReading`, `PowerAssertionHolding`,
+`CommandRunning`, `SettingsStoring` and `ApplicationControlling` protocols with test
+doubles, so the tests run on any Mac and on CI, launch no process and write nothing
+outside memory. The suite pins the menu bar strings and detail rows of
 every power state (and that the rows carry the same figures as the plain text lines),
 the state decision on the net flow including both edges of the dead band, the settling
 after a plug or unplug event, the estimator behaviour in both directions (including a
 test that fails when the time constant is not adaptive), the fixtures being one measured
 96 W charger reading plus clearly marked synthetic weak-source readings,
 the ranker's handling of pid reuse, the pointer enter/leave transitions behind the hover
-popover, and a few repository invariants: `VERSION` matches the
-latest CHANGELOG release, this README states the sampling interval, and no file contains
-an em dash or en dash.
+popover, the settings section (the exact `pmset`, `launchctl`, `sudo` and `osascript`
+argument vectors of the two scripts it replaces, the `pmset -g` and `launchctl print`
+parsers against measured output, the reconcile decisions at launch, quit and click, the
+coordinator against a scripted double of the system, and the menu rows), and a few
+repository invariants: `VERSION` matches the latest CHANGELOG release, this README states
+the sampling interval, names the settings file and quotes every `pmset` call the app can
+run, no source file names a shell or a password-free sudo rule, and no file contains an
+em dash or en dash.
 
 CI runs on GitHub Actions (`macos-latest` and `macos-15`, the lower edge for
 `swift-tools-version: 6.0`) on every push and pull request and needs no secrets.

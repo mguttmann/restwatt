@@ -34,9 +34,9 @@ The version lives in the `VERSION` file.
   current frame (`PointerRegionTracker` in `RestwattCore`, unit-tested), because the menu
   bar item is system-hosted and a tracking area on it never fires. The monitor observes the
   pointer position only and stores nothing; it is removed when the app terminates.
-- Click menu with the same rows, the top five processes, the version and
-  `Quit Restwatt`. Information lines are enabled items without an action, so they are
-  drawn in the normal label colour instead of the disabled grey.
+- Click menu with the same rows, the top five processes, the settings section (below),
+  the version and `Quit Restwatt`. Information lines are enabled items without an
+  action, so they are drawn in the normal label colour instead of the disabled grey.
 - Adaptive energy-flow estimator (`EnergyFlowEstimator`) for both directions: time to
   empty from the remaining Wh and the draw, time to full from the missing Wh (full-charge
   minus remaining capacity at the present voltage) and the charging power. Starts from the
@@ -61,7 +61,43 @@ The version lives in the `VERSION` file.
   with a new reading is trusted as is). A
   charge percentage outside 0 to 100 is treated as unreadable, because the gauge key
   semantics were only verified on Apple silicon.
-- One 30-second sampling timer; no network, no files written.
+- One 30-second sampling timer; no network. The only file written is the settings file
+  under Application Support, and only when a toggle changes.
+- Settings section in the click menu (headings `Power` and `Sync`, checkmark items),
+  replacing two hand-run shell scripts. `Keep awake`, `Keep display awake` and
+  `Keep disk awake` hold IOKit power assertions (`PreventUserIdleSystemSleep`,
+  `PreventUserIdleDisplaySleep`, `PreventDiskIdle`) in Restwatt's own process: no
+  privileges, released when toggled off and with the process; the choice is remembered and
+  re-acquired at launch. `Stay awake with the lid closed` writes the system-wide `pmset`
+  awake profile (`disablesleep 1`) as administrator and, when turned off, a fixed saver
+  profile; it tries the non-interactive `sudo -n` first and falls back to the native
+  administrator dialog (one dialog per profile), runs nothing but `pmset` with constant
+  arguments as root, and never creates, edits or recommends a password-free sudo rule.
+  `iCloud Drive` and `iCloud Photos` are switched with `launchctl bootstrap`, `kickstart`
+  and `bootout` in the `gui/<uid>` domain, `OneDrive` is launched hidden through
+  LaunchServices and asked to quit; these are immediate actions, nothing is stored for
+  them. Every checkmark shows the state read from the system when the menu opens and after
+  each click, never a stored intention; a failed action leaves the checkmark as observed
+  with the reason under the item.
+- Safety of the persistent setting: the menu warns under the toggle that it is
+  system-wide, needs administrator rights and is restored when Restwatt quits. Restwatt
+  records that it turned `disablesleep 1` on, writes the saver profile back at quit, and
+  at launch when the record says on and `pmset -g` still shows `SleepDisabled 1` (the gap
+  a crash leaves). Every settings action runs on its own: a failure records its reason on
+  its toggle and never skips the rest, so the launch reset cannot be starved by a refused
+  power assertion, and a remembered assertion the system refuses is recorded as off. A
+  `SleepDisabled 1` set outside Restwatt is left alone and shown as `set outside
+  Restwatt`. Sync is not touched at launch or quit, so sync turned off stays off until it
+  is turned on again.
+- Settings file `~/Library/Application Support/Restwatt/settings.json` holding the three
+  awake choices and the "armed by Restwatt" flag, written atomically and only on change; a
+  missing or unreadable file means everything off. This deliberately lifts the earlier
+  "nothing persisted, no preferences" stance; the README privacy section documents it.
+- `RestwattCore` additions behind protocols with test doubles: settings model, fixed
+  argument vectors for `pmset`, `launchctl`, `sudo` and `osascript`, parsers for `pmset -g`
+  and `launchctl print`, reconcile decisions and coordinator. The tests pin the exact
+  commands of the replaced scripts; repository checks require the README to name the
+  settings file and quote every `pmset` call, and no source file to name a shell.
 - `RestwattCore` library with hardware-free unit tests, including repository consistency
   checks (version, sampling interval in the README, no em or en dashes).
 - `make app` and `scripts/make-app.sh` assembling an ad-hoc signed `dist/Restwatt.app`

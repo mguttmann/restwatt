@@ -41,6 +41,54 @@ final class RepositoryConsistencyTests: XCTestCase {
                       "README must state the sampling interval of \(seconds) seconds")
     }
 
+    /// The README names the settings file, and the path it names is the one the code uses.
+    func testReadmeNamesTheSettingsFile() throws {
+        let readme = try read("README.md")
+        XCTAssertTrue(readme.contains(SettingsStoreLocation.documentedPath),
+                      "README must name the settings file \(SettingsStoreLocation.documentedPath)")
+    }
+
+    /// The pmset values in the README are held by the vector test: every call of both
+    /// profiles appears verbatim (without the `/usr/bin/` prefix and without sudo) in the docs.
+    func testReadmeQuotesBothPmsetProfiles() throws {
+        let readme = try read("README.md")
+        for profile in PmsetProfile.allCases {
+            for vector in profile.vectors {
+                let text = "pmset " + vector.arguments.joined(separator: " ")
+                XCTAssertTrue(readme.contains(text), "README must quote `\(text)`")
+            }
+        }
+    }
+
+    /// Tester hardening (AC2, AC6, N2, N5): nothing in the app touches Manuel's LaunchAgent or
+    /// caffeinate, nothing runs through a shell, and neither code nor docs mention a sudoers
+    /// rule. The words are checked case-insensitively over every Swift source file.
+    func testSourcesNeverNameTheLaunchAgentCaffeinateAShellOrSudoers() throws {
+        let forbiddenInSources = ["caffeinate", "keepdisplayawake", "sudoers", "visudo", "nopasswd",
+                                  "/bin/sh", "/bin/bash", "/bin/zsh", "launchagents.disabled"]
+        let root = Self.repositoryRoot.appendingPathComponent("Sources")
+        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
+        var checked = 0
+        while let url = enumerator?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else {
+                continue
+            }
+            checked += 1
+            let text = try String(contentsOf: url, encoding: .utf8).lowercased()
+            for word in forbiddenInSources {
+                XCTAssertFalse(text.contains(word), "\(url.lastPathComponent) mentions \(word)")
+            }
+        }
+        XCTAssertGreaterThan(checked, 10, "the Sources tree must be enumerable")
+
+        for doc in ["README.md", "CHANGELOG.md"] {
+            let text = try read(doc).lowercased()
+            for word in ["sudoers", "visudo", "nopasswd"] {
+                XCTAssertFalse(text.contains(word), "\(doc) mentions \(word)")
+            }
+        }
+    }
+
     func testNoDashesInSourcesAndDocs() throws {
         var files = ["Package.swift", "README.md", "CHANGELOG.md", "Makefile", "scripts/make-app.sh",
                      ".github/workflows/ci.yml", "packaging/Info.plist.template"]

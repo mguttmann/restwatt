@@ -6,6 +6,7 @@ import RestwattCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
     private var monitor: BatteryMonitor?
+    private var settings: SettingsCoordinator?
     private var timer: Timer?
     private var powerSourceRunLoopSource: CFRunLoopSource?
 
@@ -16,7 +17,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clock: SystemClock()
         )
         self.monitor = monitor
-        statusItem = StatusItemController()
+
+        // Settings: re-acquire the remembered assertions and close the crash gap of the
+        // lid-closed setting before the menu can show anything.
+        let settings = SettingsCoordinator(
+            store: FileSettingsStore(),
+            assertions: IOKitPowerAssertions(),
+            commands: ProcessCommandRunner(),
+            applications: WorkspaceApplicationController(),
+            uid: getuid()
+        )
+        settings.applyStoredAtLaunch()
+        self.settings = settings
+        statusItem = StatusItemController(settings: settings)
 
         // One slow timer on the main run loop; target/selector keeps the callback on the
         // main actor without a Sendable closure.
@@ -36,6 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // First: take back the lid-closed pmset profile if Restwatt set it. The assertions
+        // need nothing, the process ending releases them.
+        settings?.willTerminate()
         timer?.invalidate()
         statusItem?.stopObservingPointer()
         if let source = powerSourceRunLoopSource {
