@@ -232,6 +232,56 @@ final class EnergyStatisticsTests: XCTestCase {
         XCTAssertEqual(StatisticsCodec.encode(small), StatisticsCodec.encode(small))
     }
 
+    func testTheUnplugRecordRoundTripsAndIsPinned() {
+        var document = fullDocument
+        document.unplug = UnplugRecord(unpluggedAt: 1_938_961_041, percent: 100, precision: .exact)
+        XCTAssertEqual(StatisticsCodec.decode(StatisticsCodec.encode(document)), document)
+        let lowerBound = StoredStatistics(unplug: UnplugRecord(unpluggedAt: 1_938_980_800.25, precision: .lowerBound))
+        XCTAssertEqual(StatisticsCodec.decode(StatisticsCodec.encode(lowerBound)), lowerBound)
+
+        let small = StoredStatistics(savedAt: 1_938_981_000,
+                                     unplug: UnplugRecord(unpluggedAt: 1_938_961_041, percent: 100, precision: .exact))
+        XCTAssertEqual(String(decoding: StatisticsCodec.encode(small), as: UTF8.self), """
+        {"estimators":{},"savedAt":1938981000,"unplug":{"at":1938961041,"percent":100,"precision":"exact"},"version":1}
+        """)
+    }
+
+    func testAFileWithoutAnUnplugReadsAsBefore() {
+        // Written by 0.3.0: its shape, with synthetic values.
+        let json = """
+        {"bootTime":1938903215.417093,"estimators":{"discharging":{"lastSampleAt":1938981902.52817,\
+        "observedSeconds":12418.736204915823,"sampleCount":256,"smoothedWatts":11.874310562209348}},\
+        "savedAt":1938981960.20417,"today":{"day":"2031-06-11","entries":[{"name":"Safari","wattHours":0.9214072836104311}],\
+        "otherWattHours":0,"sampledSeconds":51240},"version":1}
+        """
+        let decoded = StatisticsCodec.decode(Data(json.utf8))
+        XCTAssertNil(decoded.unplug)
+        XCTAssertEqual(decoded.estimators.count, 1)
+        XCTAssertEqual(decoded.today?.entries.count, 1)
+    }
+
+    func testAbsurdUnplugRecordsAreDroppedOnTheirOwn() {
+        let rest = """
+        "estimators":{"charging":{"smoothedWatts":49.1,"observedSeconds":720,"sampleCount":13,"lastSampleAt":1790064000}},\
+        "today":{"day":"2026-09-22","sampledSeconds":30},"version":1
+        """
+        for unplug in ["{\"at\":-1,\"precision\":\"exact\"}", "{\"at\":1938961041,\"percent\":101,\"precision\":\"exact\"}",
+                       "{\"at\":1938961041,\"percent\":-1,\"precision\":\"exact\"}",
+                       "{\"at\":1938961041,\"percent\":50.5,\"precision\":\"exact\"}",
+                       "{\"at\":1938961041,\"percent\":1e300,\"precision\":\"exact\"}",
+                       "{\"at\":1938961041,\"precision\":\"maybe\"}", "{\"at\":1938961041}", "{\"precision\":\"exact\"}"] {
+            let decoded = StatisticsCodec.decode(Data("{\"unplug\":\(unplug),\(rest)}".utf8))
+            XCTAssertNil(decoded.unplug, unplug)
+            XCTAssertEqual(decoded.estimators.keys.sorted(), ["charging"], "the rest stays: \(unplug)")
+            XCTAssertEqual(decoded.today?.sampledSeconds, 30, unplug)
+        }
+        let sane = StatisticsCodec.decode(Data("{\"unplug\":{\"at\":1938961041,\"percent\":100.0,\"precision\":\"exact\"},\(rest)}".utf8))
+        XCTAssertEqual(sane.unplug, UnplugRecord(unpluggedAt: 1_938_961_041, percent: 100, precision: .exact))
+        XCTAssertFalse(UnplugRecord(unpluggedAt: .nan, precision: .lowerBound).isPlausible)
+        XCTAssertFalse(UnplugRecord(unpluggedAt: .infinity, precision: .lowerBound).isPlausible)
+        XCTAssertFalse(UnplugRecord(unpluggedAt: 0, percent: 101, precision: .exact).isPlausible)
+    }
+
     func testUnknownKeysAreIgnoredAndMissingKeysMeanDefaults() {
         let json = """
         {"version":1,"future":42,"estimators":{"charging":{"smoothedWatts":49.1,"observedSeconds":720,"sampleCount":13,\
@@ -340,7 +390,7 @@ final class EnergyStatisticsTests: XCTestCase {
 
     func testANewerFormatIsUnreadableAndNeverOverwritten() {
         let json = """
-        {"version":2,"bootTime":1789998856,"estimators":{"charging":{"smoothedWatts":49.1,"observedSeconds":720,\
+        {"version":2,"bootTime":1789998856,"unplug":{"at":1938961041,"percent":100,"precision":"exact"},"estimators":{"charging":{"smoothedWatts":49.1,"observedSeconds":720,\
         "sampleCount":13,"lastSampleAt":1790064000}},"today":{"day":"2026-09-22","sampledSeconds":30}}
         """
         let decoded = StatisticsCodec.decode(Data(json.utf8))
@@ -357,6 +407,10 @@ final class EnergyStatisticsTests: XCTestCase {
         memory.remember(estimator, for: "discharging")
         XCTAssertEqual(memory.today?.sampledSeconds, 30, "the session still keeps its statistic in memory")
         XCTAssertEqual(memory.resume("discharging").estimate, nil)
+        memory.saveIfChanged()
+        let tracker = BatteryPeriodTracker(wallClock: ManualWallClock(), calendar: Fixtures.newYork, memory: memory)
+        tracker.observe(externalConnected: false, percent: 90)
+        XCTAssertEqual(tracker.current?.precision, .lowerBound, "the newer file's unplug is not read")
         memory.saveIfChanged()
         XCTAssertEqual(store.saveCount, 0, "this app never writes over a newer file")
         XCTAssertEqual(store.stored?.version, 2)
@@ -417,7 +471,8 @@ final class EnergyStatisticsTests: XCTestCase {
         let document = StoredStatistics(
             bootTime: 1_789_998_856.123456, savedAt: 1_790_064_030.654321,
             estimators: ["discharging": big, "drainingOnExternalPower": big, "charging": big],
-            today: day)
+            today: day,
+            unplug: UnplugRecord(unpluggedAt: 1_938_961_041.123456, percent: 100, precision: .lowerBound))
         let size = StatisticsCodec.encode(document).count
         XCTAssertLessThan(size, 4096, "the file is a statistic, not a log")
         XCTAssertGreaterThan(size, 1000, "the document really carries 20 names")

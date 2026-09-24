@@ -4,7 +4,8 @@ A small, native macOS menu bar app that shows how much power your Mac is drawing
 its battery right now, how long the battery will last at that rate, and which of your
 processes are burning the most energy. While the battery charges it shows the charging
 power and its own time to full instead. Both estimates start from the current value and
-get steadier the longer the app runs. The menu bar item is drawn as a battery whose fill
+get steadier the longer the app runs. While no charger or other source is connected it
+also tells how long the Mac has been running on battery since it was last unplugged. The menu bar item is drawn as a battery whose fill
 follows the charge level, with the figures inside it, so it can stand in for Apple's own
 battery item. Its click menu also carries a few settings: keep the Mac, its display or its
 disk awake while Restwatt runs, keep the Mac awake with the lid closed, switch Apple's
@@ -28,7 +29,7 @@ estimate works" and "Privacy").
 </p>
 
 Both screenshots are from 0.1.0, before the battery-shaped item, the `Energy Mode`
-group and the `Open at Login` item were added.
+group, the `Open at Login` item and the `On battery for` rows were added.
 
 ## What it shows
 
@@ -83,8 +84,9 @@ after a short delay while the pointer rests on the item and closes shortly after
 pointer leaves both the item and the popover (the delays are the `showDelay` and
 `hideDelay` constants in `Sources/RestwattApp/StatusItemController.swift`). The popover
 is a two-column label/value grid in the normal label colour, so it follows a light or
-dark menu bar; the numbers use monospaced digits, and the three figures to read at a
-glance, the current draw and both time-left values, are set larger and bolder:
+dark menu bar; the numbers use monospaced digits, and the figures to read at a glance,
+the current draw, both time-left values and, on battery, the time since the unplug, are
+set larger and bolder:
 
 ```
 Battery                          95 %, 63.0 Wh
@@ -93,6 +95,8 @@ Time left at current draw                 8:49
 Time left, smoothed                       8:12
 Smoothing        42 min observed, confidence high
 macOS estimate                            7:46
+On battery for                            0:31
+Since                        12:17, from 100 %
 
 Top processes (your processes, CPU energy only, estimate)
 Discord Helper (Renderer) (2 processes)  0.42 W
@@ -115,6 +119,27 @@ counted name and how long was sampled that day as `h:mm`. It survives a restart 
 app (see "How the estimate works"), so on a launch later in the day it is there from the
 first tick, next to a live list that is still collecting its first interval. The block is
 absent until the first interval of the day has been sampled.
+
+`On battery for` answers "how long have we been off power": the wall-clock time since the
+last external source was disconnected, sleep included, as `h:mm`. `Since` under it names
+the clock time of the unplug (24-hour `HH:mm` in the Mac's time zone, `yesterday 22:30`
+for the day before, `2026-09-20 22:30` for anything older) and the charge at that
+moment, for example `12:17, from 100 %`. The two rows follow `macOS estimate` in the popover and in the click menu, and
+follow the `Power` row while a plug event waits for the gauge. They are absent while any
+external source is connected, a weak source that still drains the battery included, and
+nothing like them is shown on AC: the time does not count "since plugged in". The menu bar
+title is unchanged. The duration is rounded down to whole minutes, never up, is never
+negative, is capped at `> 99 h`, and is as of the latest sample, like every other
+row.
+
+When Restwatt does not know the exact moment, it shows an honest lower bound instead of a
+guess: `On battery for  at least 0:05` and `Since  14:05 or earlier`, without a charge
+(the charge at the real unplug is unknown). That happens after a launch on battery until
+the power log has been read, and whenever the log cannot settle it (see "Where the unplug
+time comes from" below). Restwatt never shows a time it neither watched nor read from the
+log, and never a remembered time the log contradicts or this session's first battery
+sample refutes; what it cannot see at all is
+listed under "What it cannot know".
 
 With a weak source the same rows appear, `Drawing now` being what the battery still
 supplies, followed by a `Power source` row that says `connected, but it delivers less
@@ -518,10 +543,12 @@ test:
   the ceilings, not a number, infinite) through every popover, menu and tooltip line to
   make sure nothing traps: what is not a measurement is shown as zero.
 
-Inside a session Restwatt keeps running on the system uptime clock, which stands still
-during sleep and restarts at boot; only the file carries wall-clock times. Sleep within
-a session is not detected. A missing or unreadable file, or an entry with nonsensical
-values, means a cold start without any error message.
+Inside a session the estimators run on the system uptime clock, which stands still
+during sleep and restarts at boot; only the file carries wall-clock times. For the
+estimate, sleep within a session is not detected. The `On battery for` rows are the one
+place where a wall-clock gap between two samples matters: it decides whether an unplug
+counts as watched (see "Where the unplug time comes from"). A missing or unreadable file,
+or an entry with nonsensical values, means a cold start without any error message.
 
 Below a power of 0.1 W no time is shown in either direction. Times above 5999 minutes
 are shown as `> 99 h`.
@@ -545,6 +572,107 @@ stayed the same provably predates the change, so Restwatt shows only the charge 
 instead of a stale direction (a fresh charger shown as `weak source`, or a negative draw
 right after unplugging). A flip that arrives together with a new `UpdateTime` is trusted
 as is.
+
+### Where the unplug time comes from
+
+No battery key in the IOKit registry and no IOPowerSources value carries the time of the
+last unplug, so Restwatt keeps it itself, from two sources.
+
+**Watched live.** Every sample reads `ExternalConnected`. A sample with an external source
+followed by one without, at most 60 seconds apart on the wall clock
+(`BatteryPeriodTracker.maximumObservationGap`, two sampling intervals), is the unplug
+itself: its time and the charge of the first battery sample become the record. Plugging in
+or unplugging already triggers an immediate re-sample (see "Which state is shown"), so
+the recorded time is the moment of the unplug up to that re-sample. Every sample with an
+external source connected, a weak one included, clears the record. The record is kept in
+the statistics file (see "Privacy"), so it survives a restart of the app and a reboot: the
+wall clock does not stop for either.
+
+**Asked once from the power log.** When Restwatt did not watch the unplug, it reads the
+power management log once, with the read-only command
+
+```
+pmset -g log
+```
+
+That is the case when the app starts on battery (first launch, a relaunch, a reboot on
+battery), when the last sample with a source lies more than 60 seconds before the first
+battery sample (the Mac slept in between, for example lid closed on the charger, unplugged,
+opened elsewhere), and when the charge rose across such a gap although both samples were
+on battery (plugged in and unplugged again while asleep). Until the answer arrives the
+rows show the lower bound "since the first battery sample of this session". The read runs
+at most once per battery period and session: never per sample, never when the popover or
+the menu opens, never again after an answer. It runs off the main thread at utility
+priority, launches `/usr/bin/pmset` directly without a shell, and streams the output line
+by line, holding only the current line. A line that grows past
+`PowerLog.maximumLineLength` bytes without a line break is dropped and fails the read. A
+read that takes longer than 30 seconds (`PowerLog.readTimeout`) is stopped with a
+terminate signal and killed if it is still running `PowerLog.killGrace` seconds later; a
+read that hit that deadline counts as failed even when `pmset` then exits normally, since
+its output may be cut off anywhere. A stopped read, a non-zero exit, an overlong line and
+a tool that cannot be started all count as a failed read (what applies then is described
+below). At most one read runs at a time: a request that comes while a read runs waits,
+several waiting requests collapse into the latest, and it starts when the running read
+ends.
+
+From the log only lines with a timestamp and a power source count (`Using AC` is external,
+`Using Batt` or `Using BATT` is the battery; cut-off lines are skipped, and a charge counts
+only when its reading is complete). The start of the current period is the first battery
+line after the last external line. It is shown as exact, with the first complete charge
+reading within 5 minutes of that line, when the last external line lies at most 5 minutes
+(`PowerLog.preciseBracket`) before it; otherwise, and when the log reaches back to no
+external line at all, it is shown as a lower bound without a charge. That exact start is
+checked like a remembered record: it needs a known charge at the log's start, or it is
+only a lower bound at that line (`14:05 or earlier`), and when the first battery sample of
+this session reads a higher charge than the last charge the log saw in the period, the Mac
+charged after that line without the log showing it, and the lower bound "since the first
+battery sample of this session" applies instead. A boot inside a battery period (the `powerd process is started` line) is
+a stretch nobody watched: the period only runs on across it when the charge before and
+after it is known and fell. An unchanged charge vets nothing, because a Mac held at 100 %
+or at a charge limit reads the same after charging while it was off. Otherwise the period
+starts again with the first battery line after the boot. Only a charge that rose across
+the boot proves the Mac charged while off, so only then does the last line before the boot
+bracket that restart (exact within 5 minutes as above); with an unknown or unchanged
+charge the unplug may lie anywhere before the boot and the restart is only a lower bound.
+When no battery line follows the boot
+before the log ends, the log knows no current period and the lower bound stays. When the
+last power source line of the log is not the battery, the log does not describe the
+current period and the lower bound stays either.
+
+A record from an earlier session is never shown on trust. After a launch on battery the
+remembered exact unplug is not shown before the log read has answered, and after a read
+that succeeds it is shown only when the log confirms it: the log must reach back to
+an external line no later than 60 seconds after the remembered unplug
+(`UnplugRecord.futureTolerance`), no external source may come after that line, and no
+boot after that line may be one the log does not vet. A boot counts as vetted only when a
+battery line stands before it and after it and the charge is known on both sides and fell
+(an unchanged charge, at 100 % or at a charge limit, counts as unvetted); a boot directly after the external line, a boot the log ends on and a boot the
+period restarts after all count as unvetted, because the Mac may have charged while it
+was off. Only then does the record keep its charge, which the log may lack. Otherwise the
+log's own start applies, as exact or as a lower bound by the rules above: when the log
+shows a source later, when it does not reach back to any external line, or when an
+unvetted boot follows the external line. Independently of the log, the first battery
+sample of the session drops the record as soon as it reads a higher charge than the one
+remembered at the unplug (the Mac charged in between); the log's own start then applies
+once it arrives. When the read fails (a timeout included), it observed no plug-in, and a
+reboot alone does not invalidate the record: a remembered exact unplug that the first
+battery sample of the session did not refute stays as it is, but only when its charge is
+known and below 100 %. At a full battery a charge while the Mac was off cannot show up as
+a higher first sample, so that check proves nothing and the lower bound applies; a charge
+limit below 100 % is not known to Restwatt and remains a gap. Without such a record the
+lower bound stays. A read that succeeds but does not end on the battery, or finds no
+battery period, keeps the lower bound.
+A launch on AC clears the record at once. A record more than 60
+seconds in the future (`UnplugRecord.futureTolerance`, a clock that was set back) is
+dropped when the file is loaded, and a clock set back while on battery restarts the rows
+as a lower bound from the present.
+
+Why not only the honest lower bound: that variant costs nothing, but after every launch on
+battery it would say `at least 0:05` while the answer is in the system log. The log read
+was chosen because it costs once per unwatched unplug, in the background. On the
+development Mac one full read took about 5 to 6.5 seconds of wall clock in several
+measurements, and the `pmset` process itself peaked at about 230 MB of resident memory
+while it ran; Restwatt holds only the piece of output it is reading, never the whole log. Nothing is read per sample.
 
 ### What it cannot know
 
@@ -571,6 +699,19 @@ as is.
   the gauge behaves that way on a weak source is an expectation, not a measurement.
   `AdapterDetails.Watts` may be absent on a source that does not negotiate USB-C PD; the
   `Source rating` row is then simply omitted.
+- **The time on battery counts sleep, and it cannot see everything the log does not.**
+  `On battery for` is wall-clock time since the unplug, so a night asleep on battery
+  counts; Restwatt does not show a separate awake time. A charger connected and removed
+  while the Mac was asleep or switched off is only noticed when the charge rose in
+  between (across a gap between samples, or across a boot in the log) or when the log
+  recorded it. Across a boot in the log an unchanged charge also counts as not vetted, but
+  a short plug-in at 100 % across sleep that changes nothing on the gauge can stay
+  invisible, and the rows then count from the earlier unplug. How far back `pmset -g log`
+  reaches is up to macOS; when the unplug is older than the log, the rows show a lower
+  bound. The log path was exercised against the real `pmset` on the development Mac
+  (plugged in at the time); the unit tests use synthetic lines in the same shape as that
+  log, on an invented date, not lines copied from it; a launch on battery with the real app and a live unplug were not observed during
+  development.
 - The **process list is a partial picture and an estimate**. It ranks the processes your
   user account may inspect by the kernel's per-process CPU energy counter
   (`ri_energy_nj` from `proc_pid_rusage`), aggregated by process name, as average watts
@@ -631,10 +772,14 @@ item; click `Open at Login` again, or remove it in System Settings > General > L
 
 Sampling happens on one repeating timer with a fixed interval of 30 seconds, plus a
 single one-shot timer that takes a second reading 5 seconds after the launch tick and
-then never fires again; there is no background work between ticks. The one-shot exists
+then never fires again; there is no background work between ticks except the one power
+log read described below. The one-shot exists
 because the process list needs two readings of the kernel's energy counters: without it
 the list said `collecting the first interval` for a full 30 seconds after every launch,
-now it does so for those few seconds. The one-shot is AppKit code without a unit test;
+now it does so for those few seconds. The power log read is the one `pmset -g log` run
+for an unplug Restwatt did not watch (see "Where the unplug time comes from"): off the
+main thread, at most once per battery period and session, stopped after 30 seconds. The
+one-shot is AppKit code without a unit test;
 in one smoke run the statistics file appeared within 12 seconds of launch and after
 67 seconds had counted 5 + 30 + 30 seconds, so the 30-second pace is unchanged after it.
 The statistics file is written at most once per tick, only when its contents changed, and
@@ -661,8 +806,8 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
   Restwatt and takes nothing back, and quitting writes nothing either; turn the toggle
   off by hand in the menu or run the saver `pmset` calls yourself.
 - The statistics file `~/Library/Application Support/Restwatt/statistics.json` is written
-  from the first tick that has something to remember (an estimate, a completed process
-  interval, which the second sample 5 seconds after launch delivers, or a file that
+  from the first tick that has something to remember (an estimate, an unplug, a completed
+  process interval, which the second sample 5 seconds after launch delivers, or a file that
   loading already changed, as after a reboot), at most once per tick and at quit,
   atomically (see "Footprint"). On AC inside the dead band
   there is no estimate, so the launch tick alone does not create the file. It is a
@@ -672,13 +817,18 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
   time (unix seconds) of the last tick in that state; for the current local calendar day
   (`YYYY-MM-DD`) up to 20 process names as `proc_name` reports them (no arguments, no
   paths, no pids), each with its CPU energy in watt-hours, one figure for the folded-in
-  remainder and the seconds sampled that day; the boot time of the Mac and the time of the
-  write, both as unix seconds; and a format version. Nothing else: no per-sample history,
-  no battery balance, no earlier day. The unit tests pin the exact text of a small
-  document and keep the largest possible one (20 names, three estimator entries, large
-  numbers) under 4096 bytes; the one written in a smoke run was about 1.4 KB. A missing or
+  remainder and the seconds sampled that day; while the Mac is on battery, the current
+  unplug (`unplug`: its time as unix seconds, the charge at that moment when known, and
+  whether the time is `exact` or a `lowerBound`), removed again by the first sample with
+  an external source; the boot time of the Mac and the time of the write, both as unix
+  seconds; and a format version. Nothing else: no per-sample history, no battery balance,
+  no earlier day, no earlier unplug. The unit tests pin the exact text of a small
+  document and keep the largest possible one (20 names, three estimator entries, an
+  unplug record, large numbers) under 4096 bytes; the one written in a smoke run was about 1.4 KB. A missing or
   unreadable file means a start from zero without any message; a file that is valid JSON
-  but carries absurd figures loses those entries only (see "What Restwatt remembers"),
+  but carries absurd figures loses those entries only (see "What Restwatt remembers"; an
+  unplug record with a time that is not a finite number from 1970 on, a charge that is not
+  a whole number from 0 to 100, or an unknown precision is dropped on its own),
   and a file with more than 20 names is folded to 20 on reading, the smallest into the
   remainder, exactly as a tick folds them. A file whose format version is newer than the
   one this Restwatt writes is read as empty and never written: the session keeps its
@@ -714,6 +864,11 @@ failed write is retried at the next tick and never shown. Measured with `ps -o %
   click; from their output only the source header, the `powermode` lines and the
   capability keys are used, and the fill colour of the item asks macOS whether Low Power
   Mode is in effect. None of this is stored.
+- For an unplug it did not watch, Restwatt reads `pmset -g log` once (without privileges,
+  see "Where the unplug time comes from"). Of its output only the timestamps, the power
+  source (`Using AC`, `Using Batt`), the charge in those lines and the `powerd process is
+  started` lines are looked at; only the resulting unplug record is kept, in the
+  statistics file.
 - From processes only the pid, the name and the rusage counters are read.
 - Restwatt watches pointer movement system-wide only to notice when the pointer rests on
   its menu bar item. It looks at the pointer position alone, not at clicks, keys or the
@@ -730,7 +885,9 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   EnergyFlowEstimator.swift        adaptive EWMA and confidence, draining and charging, resume from Memory
   ProcessEnergyRanker.swift        per-process energy deltas, aggregation by name, ranked report
   EnergyStatistics.swift           statistics file model: staleness rule, day statistic, JSON codec, path
-  EnergyMemory.swift               loads the statistics file, resumes and remembers estimators, records the day
+  EnergyMemory.swift               loads the statistics file, resumes and remembers estimators, records the day and the unplug
+  BatteryPeriod.swift              unplug record, the on-battery period, watched vs unwatched unplug, log answer rules
+  PowerLog.swift                   streaming pmset -g log scanner: power source lines, bracket, boot rule, timeout constant
   BatteryMonitor.swift             one tick: read, settle, dedupe, estimate, rank, remember; Sampling constants
   Formatting.swift                 every user-visible string
   PointerRegionTracker.swift       pointer enter/leave transitions for the menu bar item
@@ -738,7 +895,7 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   BatteryGlyph.swift               battery-shaped item: layout from text size and percent, fill colour rule
   EnergyMode.swift                 Apple's Energy Mode values, power sources, what one refresh observed
   PowerSettings.swift              settings model, sync services, energy mode key, stored settings, JSON codec
-  SystemCommands.swift             fixed pmset, launchctl, sudo and osascript argument vectors
+  SystemCommands.swift             fixed pmset (including the read-only pmset -g log), launchctl, sudo and osascript argument vectors
   SystemStateParser.swift          parsers for pmset -g, pmset -g custom, pmset -g cap and launchctl print
   SettingsReconciler.swift         stored fact vs observed state -> actions (launch, quit, click)
   SettingsCoordinator.swift        runs the actions behind protocols, owns the settings snapshot
@@ -746,7 +903,7 @@ Sources/RestwattCore/              pure logic, no AppKit or IOKit, unit-tested
   LoginItem.swift                  Open at Login: the four statuses, row and click decision, coordinator
 Sources/RestwattApp/               the menu bar app
   main.swift                       NSApplication bootstrap, accessory activation policy
-  AppDelegate.swift                timers, power-source notification, settings reconcile, wall clock, wiring
+  AppDelegate.swift                timers, power-source notification, settings reconcile, wall clock, power log read, wiring
   StatusItemController.swift       NSStatusItem with the battery-shaped image, redraw triggers, pointer monitor, popover, menu with settings
   MenuBarBatteryRenderer.swift     draws the battery image for the button's appearance; appearance-change subview
   DetailPopover.swift              NSPopover with the detail rows in a two-column grid
@@ -755,6 +912,7 @@ Sources/RestwattApp/               the menu bar app
   LibprocProcessReader.swift       proc_listallpids and proc_pid_rusage (RUSAGE_INFO_V6)
   IOKitPowerAssertions.swift       IOPMAssertionCreateWithName and IOPMAssertionRelease
   ProcessCommandRunner.swift       Process with a fixed executable and arguments, no shell
+  PmsetPowerLogReader.swift        the one background pmset -g log read: utility priority, streamed, timeout
   WorkspaceApplicationController.swift  NSWorkspace launch and NSRunningApplication quit request
   ApplicationSupportFile.swift     one file under Application Support: read whole, written atomically
   FileSettingsStore.swift          settings.json through ApplicationSupportFile
@@ -813,13 +971,34 @@ midnight in an injected time zone, eviction to 20 names with the remainder folde
 total, the JSON codec's round trip and pinned text with unknown keys ignored and garbage
 meaning a start from zero, the largest document under 4096 bytes, at most one write per
 tick and none without a change, a failed write retried, and the `Today` rows and lines
-with their example figures), and a few repository invariants: `VERSION` matches the
+with their example figures), the time on battery (the `pmset -g log` scanner against
+synthetic lines in the shape of a real log, cut-off lines that never invent a charge, the
+5-minute bracket at both edges, the boot rule with a fallen, unchanged, risen and unknown
+charge, a restart after a boot that is only a lower bound unless the charge rose, chunk
+boundaries, whole lines only, an overlong line and a read that hit the deadline failing
+even with exit 0, one read at a time with waiting requests collapsed into the latest; a
+watched unplug, a
+plug-in and a weak source clearing it, the 60-second observation gap at its edge, a launch
+on battery refined by the log, the log's own exact start only with a known charge that
+the first sample does not exceed, a remembered record kept when the log confirms it (also
+across a boot with a fallen charge) and never shown across a later plug-in, across a boot
+with an unchanged charge at 100 %, across a boot the log restarts the
+period after, across a boot directly after the last external line or one the log ends on,
+when the first sample reads a higher charge, or when the log does not reach back to an
+external line, a failed read keeping a remembered record the first sample did not refute
+and otherwise the lower bound, a stale read keeping the lower bound, one
+read per period, a reboot keeping the record, a record in the future dropped; the codec
+with the `unplug` key and its absurd values; the exact row texts), and a few repository invariants: `VERSION` matches the
 latest CHANGELOG release, this README states the sampling interval and the second-sample
-delay, names the settings and the statistics file, quotes every `pmset` call the app
+delay, names the settings and the statistics file, quotes the `pmset -g log` read and
+gives its timeout, bracket, observation gap and future tolerance next to their constants,
+quotes every `pmset` call the app
 can run (the two profiles and the six Energy Mode vectors), states the red-fill threshold
 as the constant the tint test holds and names the `lowpowermode` write key together with
 the `powermode` line `pmset` reports it under, no source file names a shell or a
-password-free sudo rule, and no file contains an em dash or en dash.
+password-free sudo rule, and no file contains an em dash or en dash, and neither the test sources nor this README nor
+the CHANGELOG carry a power log line dated 2026 (the scanner fixture is synthetic and says
+so).
 
 CI runs on GitHub Actions (`macos-latest` and `macos-15`, the lower edge for
 `swift-tools-version: 6.0`) on every push and pull request and needs no secrets.

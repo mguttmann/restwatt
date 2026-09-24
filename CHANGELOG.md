@@ -8,6 +8,63 @@ The version lives in the `VERSION` file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-23
+
+### Added
+
+- `On battery for` and `Since` rows in the popover and the click menu while no external
+  source is connected: how long the Mac has been off power since the last unplug, as wall
+  clock time with sleep included (`On battery for  0:31`), and the clock time and charge
+  at the unplug (`Since  12:17, from 100 %`; `yesterday 22:30` or a date for an older
+  unplug). When the exact moment is unknown the rows show an honest lower bound,
+  `at least 0:05` and `14:05 or earlier`, without a charge; Restwatt never shows a time it neither
+  watched nor read from the log. Both rows are absent while any source is connected, a weak one included;
+  the menu bar title is unchanged.
+- Restwatt records the unplug it watches live (a sample with a source followed by one
+  without, at most 60 seconds apart) with its wall-clock time and charge, and keeps it as
+  `unplug` in `statistics.json`. The first sample with a source removes it again; a reboot
+  keeps it. A record that fails the plausibility checks (not a finite time from 1970 on,
+  a charge that is not a whole number from 0 to 100, an unknown precision, more than
+  60 seconds in the future) is dropped on its own, the rest of the file stays. The file
+  format version stays 1.
+- For an unplug Restwatt did not watch (a launch on battery, an unplug across sleep), one
+  background read of `pmset -g log`, read-only and without privileges, at utility priority
+  off the main thread, streamed line by line, at most once per battery period and session,
+  one read at a time (a request during a read waits, and waiting requests collapse into
+  the latest). A read is stopped after 30 seconds and killed if it has not exited 2 seconds
+  later; a read that hit that deadline fails even when `pmset` then exits with 0, and so
+  does a line longer than 64 KiB without a line break. The start is the first battery line
+  after the last `Using AC` line, exact when that bracket is at most 5 minutes wide and the
+  charge there is known and not below the first sample of the session; otherwise a
+  lower bound. A boot inside the period only continues it when the charge fell across it;
+  an unchanged charge (at 100 % or at a charge limit) vets nothing. After any other boot
+  the period starts again after it, bracketed by the line before the boot only when the
+  charge rose, else as a lower bound. A remembered record from an earlier session is shown
+  only once the log confirms it: the log reaches back to the external line at the unplug,
+  no source came after it, and no boot after it lacks a battery line with a known, fallen
+  charge on both sides. A first sample of the session with a higher charge than the
+  remembered one drops the record as well. A failed or stopped read keeps a remembered
+  record that the first sample did not refute, since a reboot alone does not invalidate
+  it, but only when the remembered charge is known and below 100 % (at a full battery a
+  charge while off cannot show up as a higher first sample); otherwise, and after an
+  inconclusive read, the lower bound applies. The log's own exact start is held against
+  the last charge the log saw in the period, not the one at its start. The
+  scanner, the line stream and the one-read queue are pure logic in `RestwattCore`,
+  unit-tested against synthetic lines in the shape of a real log; the reader in the app
+  was run against the real `pmset` on the development Mac, while its kill after the grace
+  period, its stop on an overlong line and a launch on battery with the real app were not
+  observed during development.
+
+### Fixed
+
+- The popover never got smaller once it had been shown: when the next model had fewer
+  rows (after plugging in, for example), the leftover height appeared as an empty row
+  under a section heading such as `Today` or `Top processes`. The popover now takes its
+  size from the grid of rows alone, and any height the popover still holds lands below the
+  last row. Measured with an offscreen render during development (before: a gap of about
+  100 pt under a heading, after: none); the rows themselves, including `Top processes`,
+  are unchanged.
+
 ## [0.3.0] - 2026-09-22
 
 ### Added

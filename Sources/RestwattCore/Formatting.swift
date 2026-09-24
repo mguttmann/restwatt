@@ -52,6 +52,50 @@ public enum Formatting {
         return Int(minutes)
     }
 
+    /// Label of the battery period rows.
+    static let onBatteryLabel = "On battery for"
+    static let onBatterySinceLabel = "Since"
+
+    /// Time on battery, never rounded up: whole minutes down, capped at `> 99 h`, and marked
+    /// `at least` when the start is only a lower bound.
+    static func onBatteryDuration(_ period: OnBatteryPeriod) -> String {
+        let seconds = period.now.timeIntervalSince(period.since)
+        let minutes = seconds.isFinite && seconds > 0
+            ? Int(min((seconds / 60).rounded(.down), Double(PowerMath.maximumMinutes))) : 0
+        let duration = durationString(minutes: minutes)
+        if period.precision == .lowerBound, minutes < PowerMath.maximumMinutes {
+            return "at least \(duration)"
+        }
+        return duration
+    }
+
+    /// When the period began: `HH:mm` on the day of `now`, `yesterday HH:mm` the day before,
+    /// `YYYY-MM-DD HH:mm` earlier; `or earlier` for a lower bound, the charge for an exact start.
+    static func onBatterySince(_ period: OnBatteryPeriod) -> String {
+        let calendar = period.calendar
+        let parts = calendar.dateComponents([.hour, .minute], from: period.since)
+        let clock = String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+        let sinceDay = calendar.startOfDay(for: period.since)
+        let nowDay = calendar.startOfDay(for: period.now)
+        var text: String
+        if sinceDay >= nowDay {
+            text = clock
+        } else if calendar.date(byAdding: .day, value: -1, to: nowDay) == sinceDay {
+            text = "yesterday \(clock)"
+        } else {
+            text = "\(DailyEnergyStatistic.dayKey(for: period.since, calendar: calendar)) \(clock)"
+        }
+        switch period.precision {
+        case .lowerBound:
+            text += " or earlier"
+        case .exact:
+            if let percent = period.percentAtUnplug {
+                text += ", from \(percent) %"
+            }
+        }
+        return text
+    }
+
     /// Value of the day's total line: the energy and how long was sampled.
     static func todayTotal(_ statistic: DailyEnergyStatistic) -> String {
         let minutes = wholeMinutes(seconds: statistic.sampledSeconds)
@@ -140,6 +184,7 @@ public enum Formatting {
                 lines += timeLines(status.estimate, .toEmpty)
                 lines.append("macOS estimate: "
                     + (status.systemTimeToEmptyMinutes.map(durationString(minutes:)) ?? notYetAvailableText))
+                lines += onBatteryLines(status.onBattery)
                 if status.state == .drainingOnExternalPower {
                     lines.append("Power source: \(weakSourceText)")
                 }
@@ -152,12 +197,21 @@ public enum Formatting {
                 lines.append(fullyCharged ? "On AC power, fully charged" : "On AC power, not charging")
             case .powerSourceChanging:
                 lines.append("Power: \(powerSourceChangingText)")
+                lines += onBatteryLines(status.onBattery)
             }
             if let adapterWatts = status.adapterWatts, status.state != .powerSourceChanging {
                 lines.append("Source rating: \(adapterWatts) W")
             }
             return lines
         }
+    }
+
+    /// The battery period as one line, or none while an external source is connected.
+    static func onBatteryLines(_ period: OnBatteryPeriod?) -> [String] {
+        guard let period else {
+            return []
+        }
+        return ["\(onBatteryLabel) \(onBatteryDuration(period)), since \(onBatterySince(period))"]
     }
 
     /// The process list, `limit` entries, indented by two spaces.

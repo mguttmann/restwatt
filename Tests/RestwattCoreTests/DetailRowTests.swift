@@ -52,6 +52,26 @@ final class DetailRowTests: XCTestCase {
             processReport: .warmingUp, sampledAt: 0, adapterWatts: adapterWatts))
     }
 
+    /// 2031-06-11 18:05:11 in New York, a second before the synthetic excerpt's plug-in.
+    private let beforePlugIn = Date(timeIntervalSince1970: 1_938_981_911)
+
+    private func period(since: Double, percent: Int? = 100, precision: UnplugRecord.Precision = .exact,
+                        now: Date? = nil) -> OnBatteryPeriod {
+        OnBatteryPeriod(since: Date(timeIntervalSince1970: since), now: now ?? beforePlugIn,
+                        percentAtUnplug: percent, precision: precision, calendar: Fixtures.newYork)
+    }
+
+    private func onBattery(_ period: OnBatteryPeriod?, state: PowerState = .discharging) -> DisplayModel {
+        .battery(BatteryStatus(
+            state: state, percent: 10, remainingWattHours: 6.9, drawWatts: 13.2,
+            estimate: estimate, systemTimeToEmptyMinutes: 31, avgTimeToFullMinutes: nil,
+            processReport: report, sampledAt: 0, onBattery: period))
+    }
+
+    private func periodRows(_ model: DisplayModel) -> [DetailRow] {
+        Formatting.detailRows(model).filter { $0.label == "On battery for" || $0.label == "Since" }
+    }
+
     private var sourceChanging: DisplayModel {
         .battery(BatteryStatus(
             state: .powerSourceChanging, percent: 95, remainingWattHours: 62.975, drawWatts: 7.138,
@@ -202,6 +222,9 @@ final class DetailRowTests: XCTestCase {
                       weakSource(estimate: weakEstimate), weakSource(estimate: nil),
                       charging(estimate: chargeEstimate, gaugeMinutes: 50), charging(estimate: nil, gaugeMinutes: nil),
                       onAC(fullyCharged: false, adapterWatts: 96), sourceChanging,
+                      onBattery(period(since: 1_938_961_041)), onBattery(period(since: 1_938_911_400)),
+                      onBattery(period(since: 1_938_980_800, precision: .lowerBound)),
+                      onBattery(period(since: 1_938_961_041), state: .powerSourceChanging),
                       .unavailable(reason: "No battery found")] {
             let summary = Formatting.summaryLines(model).joined(separator: "\n")
             for row in Formatting.detailRows(model) where !row.value.isEmpty {
@@ -211,9 +234,47 @@ final class DetailRowTests: XCTestCase {
         }
     }
 
+    func testOnBatteryRowsNameTheDurationAndTheUnplug() {
+        let measured = onBattery(period(since: 1_938_961_041))
+        XCTAssertEqual(periodRows(measured), [DetailRow("On battery for", "5:47", emphasis: .primary),
+                                              DetailRow("Since", "12:17, from 100 %")])
+        XCTAssertEqual(periodRows(onBattery(period(since: 1_938_961_041, percent: nil))).last,
+                       DetailRow("Since", "12:17"), "an exact start without a known charge")
+        XCTAssertEqual(periodRows(onBattery(period(since: 1_938_980_800, precision: .lowerBound))),
+                       [DetailRow("On battery for", "at least 0:18", emphasis: .primary),
+                        DetailRow("Since", "17:46 or earlier")])
+        XCTAssertEqual(periodRows(onBattery(period(since: 1_938_911_400))).last,
+                       DetailRow("Since", "yesterday 22:30, from 100 %"))
+        XCTAssertEqual(periodRows(onBattery(period(since: 1_938_825_000))).last,
+                       DetailRow("Since", "2031-06-09 22:30, from 100 %"))
+        XCTAssertEqual(periodRows(onBattery(period(since: 1_937_981_911, precision: .lowerBound))).first,
+                       DetailRow("On battery for", "> 99 h", emphasis: .primary), "capped, and no `at least` on a cap")
+        XCTAssertEqual(periodRows(onBattery(period(since: 1_938_981_971))).first,
+                       DetailRow("On battery for", "0:00", emphasis: .primary), "a start a minute ahead shows no negative time")
+        XCTAssertEqual(periodRows(onBattery(period(since: 1_938_961_041, now: Date(timeIntervalSince1970: 1_938_961_100)))).first,
+                       DetailRow("On battery for", "0:00", emphasis: .primary), "59 s are not yet a minute, never rounded up")
+    }
+
+    func testOnBatteryRowsFollowTheMacOSEstimateAndAreAbsentOnASource() {
+        let labels = Formatting.detailRows(onBattery(period(since: 1_938_961_041))).map(\.label)
+        XCTAssertEqual(labels, ["Battery", "Drawing now", "Time left at current draw", "Time left, smoothed", "Smoothing",
+                                "macOS estimate", "On battery for", "Since"])
+        let changing = Formatting.detailRows(onBattery(period(since: 1_938_961_041), state: .powerSourceChanging))
+        XCTAssertEqual(changing.map(\.label), ["Battery", "Power", "On battery for", "Since"])
+        XCTAssertEqual(periodRows(onBattery(nil)), [])
+        for model in [discharging(estimate: estimate), weakSource(estimate: weakEstimate),
+                      charging(estimate: chargeEstimate, gaugeMinutes: 50), onAC(fullyCharged: true), sourceChanging] {
+            XCTAssertEqual(periodRows(model), [], "no period rows without a period: \(model)")
+        }
+        XCTAssertEqual(Formatting.menuBarTitle(onBattery(period(since: 1_938_961_041))),
+                       Formatting.menuBarTitle(onBattery(nil)), "the menu bar title is unchanged")
+    }
+
     func testNoDashesInRows() {
         for model in [discharging(estimate: estimate), weakSource(estimate: weakEstimate),
-                      charging(estimate: chargeEstimate, gaugeMinutes: nil), onAC(fullyCharged: true), sourceChanging] {
+                      charging(estimate: chargeEstimate, gaugeMinutes: nil), onAC(fullyCharged: true), sourceChanging,
+                      onBattery(period(since: 1_938_961_041)),
+                      onBattery(period(since: 1_938_825_000, precision: .lowerBound))] {
             let text = (Formatting.detailRows(model) + Formatting.processRows(report, limit: 5)
                 + Formatting.todayRows(Fixtures.todayStatistic, limit: 5))
                 .map { $0.label + $0.value }.joined()

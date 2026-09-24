@@ -200,9 +200,11 @@ public struct DailyEnergyStatistic: Equatable, Sendable {
 }
 
 /// What the statistics file remembers between launches. Never a log: three estimator entries
-/// at most, one day of per-name energy, and two timestamps.
+/// at most, one day of per-name energy, the current unplug, and two timestamps.
 public struct StoredStatistics: Equatable, Sendable {
-    /// Format version of the file; bumped when keys change meaning.
+    /// Format version of the file; bumped when keys change meaning. A key that is only added
+    /// (as `unplug` in 0.4.0) keeps the version: an older Restwatt ignores it and drops it on
+    /// its next write.
     public static let currentVersion = 1
     /// Boot times further apart than this mean a reboot happened in between.
     public static let bootTimeTolerance: TimeInterval = 60
@@ -221,17 +223,21 @@ public struct StoredStatistics: Equatable, Sendable {
     /// Keyed by `PowerState.memoryKey`.
     public var estimators: [String: StoredEstimatorState]
     public var today: DailyEnergyStatistic?
+    /// The last unplug while the Mac is still on battery; nil while on an external source.
+    public var unplug: UnplugRecord?
 
     public init(version: Int = StoredStatistics.currentVersion,
                 bootTime: Double? = nil,
                 savedAt: Double? = nil,
                 estimators: [String: StoredEstimatorState] = [:],
-                today: DailyEnergyStatistic? = nil) {
+                today: DailyEnergyStatistic? = nil,
+                unplug: UnplugRecord? = nil) {
         self.version = version
         self.bootTime = bootTime
         self.savedAt = savedAt
         self.estimators = estimators
         self.today = today
+        self.unplug = unplug
     }
 }
 
@@ -240,7 +246,9 @@ public struct StoredStatistics: Equatable, Sendable {
 /// an estimator entry under a key no `PowerState` uses, or with a figure that is not finite,
 /// negative or beyond its ceiling, is dropped; a day with a malformed key or absurd totals is
 /// dropped, an absurd name entry is dropped, and more names than `maximumNames` are folded
-/// as `record` would fold them. A file with a newer format version yields defaults plus that
+/// as `record` would fold them. An unplug record with a time that is not finite or before
+/// 1970, a charge that is not a whole number from 0 to 100, or an unknown precision is dropped
+/// on its own. A file with a newer format version yields defaults plus that
 /// version, so the memory knows not to overwrite it. Deterministic on the way out.
 /// Timestamps are plain unix seconds, not Foundation's reference-date encoding of `Date`.
 public enum StatisticsCodec {
@@ -263,12 +271,21 @@ public enum StatisticsCodec {
         var sampledSeconds: Double?
     }
 
+    /// The charge is read as a number of any kind, so a fraction or a huge value drops the
+    /// record instead of failing the whole decode.
+    private struct UnplugDocument: Codable {
+        var at: Double?
+        var percent: Double?
+        var precision: String?
+    }
+
     private struct Document: Codable {
         var version: Int?
         var bootTime: Double?
         var savedAt: Double?
         var estimators: [String: EstimatorDocument]?
         var today: DayDocument?
+        var unplug: UnplugDocument?
     }
 
     public static func encode(_ statistics: StoredStatistics) -> Data {
@@ -285,9 +302,13 @@ public enum StatisticsCodec {
                 otherWattHours: day.otherWattHours,
                 sampledSeconds: day.sampledSeconds)
         }
+        let unplug = statistics.unplug.map { record in
+            UnplugDocument(at: record.unpluggedAt, percent: record.percent.map(Double.init),
+                           precision: record.precision.rawValue)
+        }
         let document = Document(
             version: statistics.version, bootTime: statistics.bootTime, savedAt: statistics.savedAt,
-            estimators: estimators, today: today)
+            estimators: estimators, today: today, unplug: unplug)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         // Encoding a struct of finite plain values cannot fail; an empty Data would decode to
@@ -359,6 +380,23 @@ public enum StatisticsCodec {
             bootTime: document.bootTime.flatMap { $0.isFinite ? $0 : nil },
             savedAt: document.savedAt.flatMap { $0.isFinite ? $0 : nil },
             estimators: estimators,
-            today: today)
+            today: today,
+            unplug: document.unplug.flatMap(Self.unplugRecord))
+    }
+
+    private static func unplugRecord(_ document: UnplugDocument) -> UnplugRecord? {
+        guard let at = document.at,
+              let precision = document.precision.flatMap(UnplugRecord.Precision.init(rawValue:)) else {
+            return nil
+        }
+        var percent: Int?
+        if let value = document.percent {
+            guard value.isFinite, value.rounded() == value, (0...100).contains(value) else {
+                return nil
+            }
+            percent = Int(value)
+        }
+        let record = UnplugRecord(unpluggedAt: at, percent: percent, precision: precision)
+        return record.isPlausible ? record : nil
     }
 }

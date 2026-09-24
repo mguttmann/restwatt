@@ -68,6 +68,36 @@ final class RepositoryConsistencyTests: XCTestCase {
                       "README must state the second sample delay of \(seconds) seconds")
     }
 
+    /// The on-battery period: the README quotes the one log read verbatim and names each of
+    /// its numbers together with the constant that holds it.
+    func testReadmeNamesThePowerLogReadAndItsNumbers() throws {
+        let readme = try read("README.md")
+        let vector = SystemCommands.pmsetReadLog
+        let quoted = (["pmset"] + vector.arguments).joined(separator: " ")
+        XCTAssertEqual(vector.executable, "/usr/bin/pmset")
+        XCTAssertTrue(readme.contains("\n\(quoted)\n"), "README must quote `\(quoted)` on its own line")
+
+        let facts: [(value: Int, unit: String, constant: String)] = [
+            (Int(PowerLog.readTimeout), "seconds", "PowerLog.readTimeout"),
+            (Int(PowerLog.preciseBracket / 60), "minutes", "PowerLog.preciseBracket"),
+            (Int(BatteryPeriodTracker.maximumObservationGap), "seconds", "BatteryPeriodTracker.maximumObservationGap"),
+            (Int(UnplugRecord.futureTolerance), "seconds", "UnplugRecord.futureTolerance"),
+        ]
+        XCTAssertEqual(PowerLog.preciseBracket.truncatingRemainder(dividingBy: 60), 0)
+        for fact in facts {
+            XCTAssertTrue(Self.mentions(readme, value: fact.value, unit: fact.unit, near: fact.constant),
+                          "README must give \(fact.constant) as \(fact.value) \(fact.unit) right before it")
+        }
+    }
+
+    /// `<value> <unit>` followed, across line breaks and within 40 characters without a period, by the
+    /// constant in backticks.
+    private static func mentions(_ text: String, value: Int, unit: String, near constant: String) -> Bool {
+        let flat = text.replacingOccurrences(of: "\n", with: " ")
+        let pattern = "\\b\(value) \(unit)\\b[^.`]{0,40}\\(`" + NSRegularExpression.escapedPattern(for: constant) + "`"
+        return flat.range(of: pattern, options: .regularExpression) != nil
+    }
+
     /// The pmset values in the README are held by the vector test: every call of both
     /// profiles appears verbatim (without the `/usr/bin/` prefix and without sudo) in the docs.
     func testReadmeQuotesBothPmsetProfiles() throws {
@@ -130,6 +160,31 @@ final class RepositoryConsistencyTests: XCTestCase {
             for word in ["sudoers", "visudo", "nopasswd"] {
                 XCTAssertFalse(text.contains(word), "\(doc) mentions \(word)")
             }
+        }
+    }
+
+    /// The power log fixture is synthetic. The real log read while building 0.4.0 dates from
+    /// 2026; no line in its format and year may come back into the public repository.
+    func testNoPowerLogLineFrom2026IsCheckedIn() throws {
+        let logLine = try NSRegularExpression(pattern: #"2026-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}"#)
+        var files = ["README.md", "CHANGELOG.md"]
+        let root = Self.repositoryRoot.appendingPathComponent("Tests")
+        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
+        while let url = enumerator?.nextObject() as? URL {
+            if url.pathExtension == "swift" {
+                files.append("Tests/" + url.path.replacingOccurrences(of: root.path + "/", with: ""))
+            }
+        }
+        XCTAssertTrue(files.contains("Tests/RestwattCoreTests/Fixtures.swift"), "the fixture must be checked")
+        for file in files {
+            let text = try read(file)
+            let found = logLine.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+            XCTAssertNil(found, "\(file) carries a power log line dated 2026")
+        }
+        XCTAssertTrue(try read("Tests/RestwattCoreTests/Fixtures.swift").contains("SYNTHETIC: invented power source lines"))
+        XCTAssertFalse(Fixtures.powerLogLines.isEmpty)
+        for line in Fixtures.powerLogLines {
+            XCTAssertFalse(line.hasPrefix("2026-"), line)
         }
     }
 

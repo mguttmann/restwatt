@@ -78,15 +78,22 @@ final class DetailPopover {
         }
         contentView.addSubview(grid)
         let inset: CGFloat = 14
+        let topInset = inset - 2
+        // The bottom may give: while the popover still has its old size, the extra height
+        // stays below the last row instead of being spread into a gap under a heading.
         NSLayoutConstraint.activate([
             grid.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: inset),
             grid.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -inset),
-            grid.topAnchor.constraint(equalTo: contentView.topAnchor, constant: inset - 2),
-            grid.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -inset),
+            grid.topAnchor.constraint(equalTo: contentView.topAnchor, constant: topInset),
+            grid.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -inset),
         ])
         self.grid = grid
-        contentView.layoutSubtreeIfNeeded()
-        viewController.preferredContentSize = contentView.fittingSize
+        // The size comes from the grid alone. The content view's own fitting size never drops
+        // below its current frame once it is in the popover, so a model with fewer rows would
+        // never shrink the popover.
+        let fitting = grid.fittingSize
+        viewController.preferredContentSize = NSSize(
+            width: fitting.width + 2 * inset, height: fitting.height + topInset + inset)
     }
 
     private static func cells(for row: DetailRow) -> [NSView] {

@@ -43,6 +43,7 @@ extension Formatting {
                 rows.append(DetailRow(
                     "macOS estimate",
                     status.systemTimeToEmptyMinutes.map(durationString(minutes:)) ?? notYetAvailableText))
+                rows += onBatteryRows(status.onBattery)
                 if status.state == .drainingOnExternalPower {
                     rows.append(DetailRow("Power source", weakSourceText, emphasis: .primary))
                 }
@@ -57,6 +58,7 @@ extension Formatting {
                     "Power", fullyCharged ? "On AC, fully charged" : "On AC, not charging", emphasis: .primary))
             case .powerSourceChanging:
                 rows.append(DetailRow("Power", powerSourceChangingText, emphasis: .primary))
+                rows += onBatteryRows(status.onBattery)
             }
             if let adapterWatts = status.adapterWatts, status.state != .powerSourceChanging {
                 rows.append(DetailRow("Source rating", "\(adapterWatts) W"))
@@ -77,6 +79,18 @@ extension Formatting {
             DetailRow(labels.smoothed, estimate.smoothedMinutes.map(durationString(minutes:)) ?? "n/a",
                       emphasis: .primary),
             DetailRow("Smoothing", "\(observedMinutes(estimate)) min observed, confidence \(estimate.confidence.rawValue)"),
+        ]
+    }
+
+    /// How long the Mac has been off external power (primary) and since when (secondary), or
+    /// nothing while a source is connected. Mirrors `onBatteryLines`.
+    private static func onBatteryRows(_ period: OnBatteryPeriod?) -> [DetailRow] {
+        guard let period else {
+            return []
+        }
+        return [
+            DetailRow(onBatteryLabel, onBatteryDuration(period), emphasis: .primary),
+            DetailRow(onBatterySinceLabel, onBatterySince(period)),
         ]
     }
 

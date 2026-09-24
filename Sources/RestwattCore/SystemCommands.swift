@@ -94,6 +94,10 @@ public enum SystemCommands {
     /// appears there as `powermode`.
     public static let pmsetReadCustom = CommandVector(pmset, ["-g", "custom"])
 
+    /// The power management log of the last days; read once per battery period that Restwatt
+    /// did not watch begin, to find the unplug. Never written.
+    public static let pmsetReadLog = CommandVector(pmset, ["-g", "log"])
+
     /// Lists the keys the current power source can set, headed by the source's name.
     public static let pmsetReadCapabilities = CommandVector(pmset, ["-g", "cap"])
 

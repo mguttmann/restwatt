@@ -144,6 +144,74 @@ enum Fixtures {
         ],
         otherWattHours: 0.4,
         sampledSeconds: 15120)
+
+    // MARK: Power log
+
+    /// SYNTHETIC: invented power source lines in the measured shape of `pmset -g log` (column
+    /// layout, tabs and trailing blanks, the five spellings of the power source), on a fictional
+    /// 2031-06-10 to 2031-06-11 in America/New_York (-0400, daylight saving time as in the
+    /// measured log). No line comes from a real log. Among them the cut-off Assertions lines
+    /// `Using AC(Char`, `Using Batt(Charge:` and `Using Batt(Charge: 1`, and a boot marker while
+    /// on AC. The last AC line before the final battery period is at 12:14:45, the first battery
+    /// line after it at 12:17:21 with 100 %, and the last line is the plug-in at 18:05:12.
+    static let powerLogLines: [String] = [
+        "2031-06-10 19:12:05 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-10 19:12:06 -0400 Sleep               \tEntering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 2400 secs ",
+        "2031-06-10 19:52:07 -0400 DarkWake            \tDarkWake from Deep Idle [CDN] : due to rtc/Maintenance Using BATT (Charge:100%) 12 secs    ",
+        "2031-06-10 19:52:08 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser SRPrevSleep kCPU kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-10 19:52:19 -0400 Sleep               \tEntering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 3300 secs ",
+        "2031-06-10 20:47:20 -0400 DarkWake            \tDarkWake from Deep Idle [CDN] : due to rtc/Maintenance Using BATT (Charge:100%) 8 secs    ",
+        "2031-06-10 20:47:28 -0400 Sleep               \tEntering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 1800 secs ",
+        "2031-06-10 21:17:29 -0400 DarkWake            \tDarkWake from Deep Idle [CDN] : due to rtc/Maintenance Using BATT (Charge:100%) 2 secs    ",
+        "2031-06-10 21:17:30 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp PrevSleep DeclUser BGTask SRPrevSleep kCPU kDisp] Using AC(Char          ",
+        "2031-06-10 21:17:31 -0400 Wake                \tDarkWake to FullWake from Deep Idle [CDNVA] : due to Notification Using AC (Charge:100%)           ",
+        "2031-06-10 22:40:12 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser BGTask kDisp] Using AC(Charge: 100)          ",
+        "2031-06-11 01:05:44 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using AC(Charge: 100)          ",
+        "2031-06-11 03:02:10 -0400 Start               \tpowerd process is started                                                  \t          ",
+        "2031-06-11 03:02:41 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser BGTask kCPU kDisp] Using AC(Charge: 100)          ",
+        "2031-06-11 06:30:03 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using AC(Charge: 100)          ",
+        "2031-06-11 07:48:15 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser NetAcc kCPU kDisp] Using AC(Charge: 100)          ",
+        "2031-06-11 07:55:40 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-11 08:20:02 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using Batt(Charge: 98)          ",
+        "2031-06-11 08:20:05 -0400 Sleep               \tEntering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:98%) 300 secs ",
+        "2031-06-11 08:25:06 -0400 DarkWake            \tDarkWake from Deep Idle [CDN] : due to rtc/Maintenance Using BATT (Charge:98%) 10 secs    ",
+        "2031-06-11 08:25:07 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser SRPrevSleep kCPU kDisp] Using Batt(Charge: 98)          ",
+        "2031-06-11 08:25:16 -0400 Sleep               \tEntering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:98%) 2900 secs ",
+        "2031-06-11 09:13:37 -0400 DarkWake            \tDarkWake from Deep Idle [CDN] : due to rtc/Maintenance Using BATT (Charge:98%) 14 secs    ",
+        "2031-06-11 09:13:51 -0400 Sleep               \tEntering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:98%) 600 secs ",
+        "2031-06-11 09:23:52 -0400 Wake                \tWake from Deep Idle [CDNVA] : due to UserActivity Using BATT (Charge:98%)           ",
+        "2031-06-11 09:23:54 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using Batt(Charge: 98)          ",
+        "2031-06-11 10:31:09 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser BGTask kDisp] Using AC(Charge: 81)          ",
+        "2031-06-11 11:02:46 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser BGTask kCPU kDisp] Using AC(Charge: 94)          ",
+        "2031-06-11 11:02:47 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using AC(Charge: 94)          ",
+        "2031-06-11 11:40:18 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser IntPrevDisp kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-11 11:40:29 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser IntPrevDisp kDisp] Using AC(Charge: 100)          ",
+        "2031-06-11 11:52:03 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using AC(Charge: 100)          ",
+        "2031-06-11 12:14:37 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser IntPrevDisp kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-11 12:14:45 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser BGTask IntPrevDisp kDisp] Using AC(Charge: 100)          ",
+        "2031-06-11 12:17:21 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-11 12:31:08 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser SysAct IntPrevDisp kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-11 12:31:08 -0400 Sleep               \tEntering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 640 secs ",
+        "2031-06-11 12:41:49 -0400 DarkWake            \tDarkWake from Deep Idle [CDN] : due to rtc/Maintenance Using BATT (Charge:100%) 9 secs    ",
+        "2031-06-11 12:41:53 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser SRPrevSleep kCPU kDisp] Using Batt(Charge:          ",
+        "2031-06-11 12:41:58 -0400 Sleep               \tEntering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 1500 secs ",
+        "2031-06-11 13:06:59 -0400 DarkWake            \tDarkWake from Deep Idle [CDN] : due to rtc/Maintenance Using BATT (Charge:100%) 17 secs    ",
+        "2031-06-11 13:07:16 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser IntPrevDisp kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-11 13:07:16 -0400 Sleep               \tEntering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 1300 secs ",
+        "2031-06-11 13:28:57 -0400 DarkWake            \tDarkWake from Deep Idle [CDN] : due to rtc/Maintenance Using BATT (Charge:100%) 8 secs    ",
+        "2031-06-11 13:28:58 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser SRPrevSleep IntPrevDisp kCPU kDisp] Using Batt(Charge:          ",
+        "2031-06-11 13:29:05 -0400 Sleep               \tEntering Sleep state due to 'Maintenance Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 2000 secs ",
+        "2031-06-11 14:21:47 -0400 Wake                \tWake from Deep Idle [CDNVA] : due to UserActivity Using BATT (Charge:100%)           ",
+        "2031-06-11 14:21:49 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser IntPrevDisp kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-11 14:22:30 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser IntPrevDisp kCPU kDisp] Using Batt(Charge: 1          ",
+        "2031-06-11 14:24:53 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using Batt(Charge: 100)          ",
+        "2031-06-11 15:41:02 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser BGTask kDisp] Using Batt(Charge: 61)          ",
+        "2031-06-11 18:05:12 -0400 Assertions          \tSummary- [System: PrevIdle PrevDisp DeclUser kDisp] Using AC(Charge: 12)          ",
+    ]
+
+    static var powerLogExcerpt: String {
+        powerLogLines.joined(separator: "\n") + "\n"
+    }
 }
 
 final class ManualWallClock: WallClockReading {

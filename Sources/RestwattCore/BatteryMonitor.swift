@@ -30,6 +30,8 @@ public struct BatteryStatus: Equatable, Sendable {
     public var adapterWatts: Int?
     /// Energy per process name over the current day; nil while nothing of the day is sampled.
     public var today: DailyEnergyStatistic?
+    /// How long the Mac has been off external power; nil while a source is connected.
+    public var onBattery: OnBatteryPeriod?
 
     public init(
         state: PowerState,
@@ -42,7 +44,8 @@ public struct BatteryStatus: Equatable, Sendable {
         processReport: ProcessEnergyReport,
         sampledAt: TimeInterval,
         adapterWatts: Int? = nil,
-        today: DailyEnergyStatistic? = nil
+        today: DailyEnergyStatistic? = nil,
+        onBattery: OnBatteryPeriod? = nil
     ) {
         self.state = state
         self.percent = percent
@@ -55,6 +58,7 @@ public struct BatteryStatus: Equatable, Sendable {
         self.sampledAt = sampledAt
         self.adapterWatts = adapterWatts
         self.today = today
+        self.onBattery = onBattery
     }
 }
 
@@ -70,6 +74,7 @@ public final class BatteryMonitor {
     private let processes: ProcessReading
     private let clock: ClockReading
     private let memory: EnergyMemory?
+    private let period: BatteryPeriodTracker?
 
     private var estimator = EnergyFlowEstimator()
     /// Flow states whose estimator was already taken from memory this session; a later
@@ -84,12 +89,14 @@ public final class BatteryMonitor {
     private var previousProcesses: [ProcessEnergySample] = []
     private var previousProcessTime: TimeInterval?
 
+    /// `period` should share `memory`, so the unplug is written with the rest of the file.
     public init(battery: BatteryReading, processes: ProcessReading, clock: ClockReading,
-                memory: EnergyMemory? = nil) {
+                memory: EnergyMemory? = nil, period: BatteryPeriodTracker? = nil) {
         self.battery = battery
         self.processes = processes
         self.clock = clock
         self.memory = memory
+        self.period = period
     }
 
     public func tick() -> DisplayModel {
@@ -103,6 +110,7 @@ public final class BatteryMonitor {
             return .unavailable(reason: "Battery data unreadable")
         }
 
+        period?.observe(externalConnected: snapshot.externalConnected, percent: snapshot.currentCapacityPercent)
         let state = presentedState(for: snapshot)
         let drawWatts = PowerMath.drawWatts(snapshot)
         let remainingWattHours = PowerMath.remainingWattHours(snapshot)
@@ -162,8 +170,19 @@ public final class BatteryMonitor {
             processReport: report,
             sampledAt: now,
             adapterWatts: snapshot.adapterWatts,
-            today: memory?.today
+            today: memory?.today,
+            onBattery: period?.current
         ))
+    }
+
+    /// The power log read the period tracker asks for, at most once per battery period.
+    public func takePowerLogRequest() -> PowerLogRequest? {
+        period?.takePowerLogRequest()
+    }
+
+    /// Hand the answer of a power log read to the period tracker; the next tick shows it.
+    public func applyPowerLog(_ outcome: PowerLogOutcome, for request: PowerLogRequest) {
+        period?.apply(outcome, for: request)
     }
 
     /// Write the memory one last time; the app calls this when it quits.

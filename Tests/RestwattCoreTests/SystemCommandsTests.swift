@@ -28,6 +28,10 @@ final class SystemCommandsTests: XCTestCase {
         XCTAssertEqual(SystemCommands.pmsetRead, CommandVector("/usr/bin/pmset", ["-g"]))
     }
 
+    func testPmsetLogVectorOnlyReads() {
+        XCTAssertEqual(SystemCommands.pmsetReadLog, CommandVector("/usr/bin/pmset", ["-g", "log"]))
+    }
+
     func testLaunchctlVectorsMatchTheScripts() {
         XCTAssertEqual(SystemCommands.launchctlBootstrap(.iCloudDrive, uid: 503),
                        CommandVector("/bin/launchctl", ["bootstrap", "gui/503", "/System/Library/LaunchAgents/com.apple.bird.plist"]))

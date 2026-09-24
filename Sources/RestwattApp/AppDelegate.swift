@@ -10,13 +10,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var secondSampleTimer: Timer?
     private var powerSourceRunLoopSource: CFRunLoopSource?
+    private var powerLogReads = PowerLogReadQueue()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let memory = EnergyMemory(store: FileStatisticsStore(), wallClock: SystemWallClock(), calendar: .current)
         let monitor = BatteryMonitor(
             battery: IOKitBatteryReader(),
             processes: LibprocProcessReader(),
             clock: SystemClock(),
-            memory: EnergyMemory(store: FileStatisticsStore(), wallClock: SystemWallClock(), calendar: .current)
+            memory: memory,
+            period: BatteryPeriodTracker(wallClock: SystemWallClock(), calendar: .current, memory: memory)
         )
         self.monitor = monitor
 
@@ -107,6 +110,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         statusItem.show(monitor.tick())
+        if let request = monitor.takePowerLogRequest(), let start = powerLogReads.submit(request) {
+            readPowerLog(for: start)
+        }
+    }
+
+    /// One background read of the power log for a battery period Restwatt did not watch
+    /// begin; the answer is applied on the main actor and shown with an extra tick. A request
+    /// that came while the read ran starts when it ends.
+    private func readPowerLog(for request: PowerLogRequest) {
+        PmsetPowerLogReader.read { outcome in
+            // The delegate lives as long as the app.
+            Task { @MainActor in
+                guard let monitor = self.monitor else {
+                    return
+                }
+                monitor.applyPowerLog(outcome, for: request)
+                if let next = self.powerLogReads.finish() {
+                    self.readPowerLog(for: next)
+                }
+                self.sample()
+            }
+        }
     }
 }
 

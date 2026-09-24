@@ -1,14 +1,16 @@
 import Foundation
 
-/// What Restwatt remembers between launches: the estimator of each flow state and the day's
-/// energy per process name. Loaded once, kept in memory, written back at most once per tick
+/// What Restwatt remembers between launches: the estimator of each flow state, the day's
+/// energy per process name, and the current unplug. Loaded once, kept in memory, written back at most once per tick
 /// and when the app quits, and only when something changed. A write that fails is retried on
 /// the next tick and never shown.
 ///
 /// A reboot is judged once, at load: when the file's boot time and the current one are both
 /// known and further apart than `StoredStatistics.bootTimeTolerance`, every estimator entry
 /// is dropped from the loaded model, so the first write of this session no longer carries
-/// pre-reboot entries under the new boot time. A file written by a newer Restwatt is read as
+/// pre-reboot entries under the new boot time. The unplug survives a reboot, the wall clock
+/// still holds; one that lies more than `UnplugRecord.futureTolerance` in the future is
+/// dropped at load. A file written by a newer Restwatt is read as
 /// empty and never written.
 public final class EnergyMemory {
     private let store: StatisticsStoring
@@ -31,6 +33,15 @@ public final class EnergyMemory {
            abs(currentBootTime.timeIntervalSince1970 - storedBootTime) > StoredStatistics.bootTimeTolerance {
             stored.estimators = [:]
         }
+        if let unplug = stored.unplug, !unplug.isPlausible(now: wallClock.now) {
+            stored.unplug = nil
+        }
+    }
+
+    /// The unplug record, kept by `BatteryPeriodTracker`; written with the rest of the file.
+    public var unplug: UnplugRecord? {
+        get { stored.unplug }
+        set { stored.unplug = newValue }
     }
 
     /// The estimator to continue with when `key` is shown for the first time this session:
