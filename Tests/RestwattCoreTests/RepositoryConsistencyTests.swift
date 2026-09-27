@@ -213,4 +213,14 @@ final class RepositoryConsistencyTests: XCTestCase {
             XCTAssertFalse(text.contains("\u{2014}"), "em dash in \(file)")
         }
     }
+
+    /// The README quotes the settle wait of the sync toggles from the constants.
+    func testReadmeNamesTheServiceSettleWait() throws {
+        let readme = try read("README.md")
+        func seconds(_ value: TimeInterval) -> String {
+            value == value.rounded() ? String(Int(value)) : String(value)
+        }
+        XCTAssertTrue(readme.contains("every \(seconds(SettingsCoordinator.serviceSettleInterval)) seconds"))
+        XCTAssertTrue(readme.contains("\(seconds(SettingsCoordinator.serviceSettleDeadline)) seconds have passed"))
+    }
 }

@@ -387,11 +387,32 @@ a checkmark on a row whose raw value you can compare with `pmset -g custom` your
 A few practical notes. Starting OneDrive and asking it to quit both return before the
 application has finished, so right after the click the checkmark can still show the old
 state; it is read again when the menu opens next. Whether a `launchctl` call succeeded is
-judged by the state read back afterwards, not by its exit code (the exit codes appear in
-the reason line only when the target state was not reached). If the settings file cannot
-be written, the action still happens and a line at the bottom of the section says
-`settings could not be saved` with the reason; the one exception is turning `Stay awake
-with the lid closed` on, which needs its record saved first and is refused otherwise
+judged by the state read back afterwards, not by its exit code. A job that launchd is
+still starting or stopping can show in neither end state right after the calls, so
+Restwatt reads `launchctl print` again every 0.2 seconds until 2 seconds have passed and counts
+the click as done as soon as the wanted state shows. The wait runs on the main thread, so
+Restwatt does not respond during it. Turning a service off only counts when launchd no
+longer lists it; a state that could not be read is not taken as off. When the wanted
+state has not shown by the end of the wait, the reason line names each call that failed
+with its exit code and message (`could not change: launchctl bootout exit 5: Boot-out
+failed: 5: Input/output error`), or, when every call succeeded, the state launchd
+reported (`could not change: launchctl succeeded, but launchd reports it running after
+2 s`). A state line from `launchctl print` that Restwatt does not know is quoted as it
+is, both in that reason (`no known state (launchctl print reports state = ...)`) and
+next to the item (`state unknown: launchctl print reports state = ...`).
+
+A reason line under a sync item, under `Stay awake with the lid closed` after a failed
+turn-on, or under an Energy Mode row disappears as soon as a later read (when the menu
+opens, or after a click on one of these settings) shows the state the failed click wanted, for example a service
+that finished starting only after the wait. For the Energy Mode the mode has to show for
+the power source the click wrote. Every other reason line stays until a later click on
+that item succeeds: a failed turn-off of `Stay awake with the lid closed` (the saver
+profile writes more settings than the `SleepDisabled` value read back can confirm), a
+click refused because a read failed, and a refused keep-awake assertion.
+
+If the settings file cannot be written, the action still happens and a line at the
+bottom of the section says `settings could not be saved` with the reason; the one
+exception is turning `Stay awake with the lid closed` on, which needs its record saved first and is refused otherwise
 (see safety fact 1). If `pmset -g` cannot be read, the lid-closed toggle shows off with
 `could not read pmset` and the reason, and nothing is written at launch. Clicking it in
 that state refuses to write the awake profile (`not written, could not read pmset` plus
@@ -429,8 +450,9 @@ anywhere else. macOS reports one of four statuses:
 
 If adding or removing the login item fails, the reason macOS gives appears in an indented
 line under the item (`could not change:` followed by it) and the checkmark stays on the
-status read back from the system, the same as for the toggles above. The line stays until
-a later click succeeds.
+status read back from the system, the same as for the toggles above. The line disappears once a later read shows a
+different status, for example after you allowed the item in System Settings, or when a
+later click succeeds.
 
 Before you turn it on, put the app where it is going to stay, normally `/Applications`
 (`make install`, see "Build and install"). macOS registers the app at the path it is

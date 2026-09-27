@@ -99,6 +99,15 @@ final class SystemStateParserTests: XCTestCase {
         XCTAssertFalse(SystemStateParser.parseLaunchctlPrint(result).isOn)
     }
 
+    /// Ticket 15: a job launchd is still spawning reports neither end state; the reason
+    /// passes launchd's own line on instead of guessing what it means.
+    func testLaunchctlInBetweenStateIsUnknownWithLaunchdsOwnLine() {
+        let result = CommandResult(exitStatus: 0, stdout: SystemFixtures.launchctlSpawning("com.apple.bird"))
+        XCTAssertEqual(SystemStateParser.parseLaunchctlPrint(result),
+                       .unknown("launchctl print reports state = spawn scheduled"))
+        XCTAssertFalse(SystemStateParser.parseLaunchctlPrint(result).isOn)
+    }
+
     func testLaunchctlSuccessWithoutStateIsUnknown() {
         let result = CommandResult(exitStatus: 0, stdout: "gui/503/x = {\n}\n")
         XCTAssertEqual(SystemStateParser.parseLaunchctlPrint(result), .unknown("launchctl print reported no state"))
@@ -238,5 +247,16 @@ final class SystemStateParserTests: XCTestCase {
         XCTAssertNil(SystemStateParser.parseCapabilities(pmsetCapOutput: ""))
         XCTAssertNil(SystemStateParser.parseCapabilities(pmsetCapOutput: " lowpowermode\n"), "keys without a header")
         XCTAssertNil(SystemStateParser.parseCapabilities(pmsetCapOutput: "Battery Power:\n powermode 1\n"), "the custom output is not a capability list")
+    }
+
+    /// A nested block's own `state = ` line comes first; only the job's top-level line counts.
+    func testNestedStateLinesAreNotTheJobsState() {
+        let output = "gui/501/com.apple.bird = {\n\tendpoints = {\n\t\tstate = active\n\t}\n"
+            + "\tstate = spawn scheduled\n\tjob state = running\n}\n"
+        XCTAssertEqual(SystemStateParser.parseLaunchctlPrint(CommandResult(exitStatus: 0, stdout: output)),
+                       .unknown("launchctl print reports state = spawn scheduled"))
+        let nestedOnly = "gui/501/x = {\n\tendpoints = {\n\t\tstate = running\n\t}\n}\n"
+        XCTAssertEqual(SystemStateParser.parseLaunchctlPrint(CommandResult(exitStatus: 0, stdout: nestedOnly)),
+                       .unknown("launchctl print reported no state"), "a nested running is not the job running")
     }
 }

@@ -8,10 +8,15 @@ final class SettingsCoordinatorTests: XCTestCase {
     private var assertions = FakeAssertions()
     private var runner = ScriptedCommandRunner()
     private var applications = FakeApplications()
+    private var clock = FakeSettleClock()
 
     private func makeCoordinator() -> SettingsCoordinator {
         SettingsCoordinator(store: store, assertions: assertions, commands: runner,
-                            applications: applications, uid: testUID)
+                            applications: applications, uid: testUID, clock: clock)
+    }
+
+    private func printCalls(_ service: SyncService) -> Int {
+        runner.calls.filter { $0 == SystemCommands.launchctlPrint(service.rawValue, uid: testUID) }.count
     }
 
     private var pmsetWriteCalls: [CommandVector] {
@@ -534,6 +539,7 @@ final class SettingsCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.snapshot.sync[.iCloudDrive], .running)
         XCTAssertNil(coordinator.snapshot.lastError[.sync(.iCloudDrive)])
         XCTAssertEqual(store.saveCount, 0, "sync choices are never stored")
+        XCTAssertEqual(clock.pauses, [], "the wanted state on the first read needs no wait")
     }
 
     func testSyncOnThatChangesNothingShowsOffWithExitCodes() {
@@ -547,7 +553,8 @@ final class SettingsCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(coordinator.snapshot.sync[.iCloudPhotos], .off)
         XCTAssertFalse(coordinator.snapshot.isOn(.sync(.iCloudPhotos)))
-        XCTAssertEqual(coordinator.snapshot.lastError[.sync(.iCloudPhotos)], "launchctl exit 5, 113")
+        XCTAssertEqual(coordinator.snapshot.lastError[.sync(.iCloudPhotos)],
+                       "launchctl bootstrap exit 5; kickstart exit 113")
     }
 
     func testSyncOffBootsOutAndReadsBack() {
@@ -575,7 +582,271 @@ final class SettingsCoordinatorTests: XCTestCase {
         coordinator.toggle(.sync(.iCloudDrive))
 
         XCTAssertEqual(coordinator.snapshot.sync[.iCloudDrive], .running)
-        XCTAssertEqual(coordinator.snapshot.lastError[.sync(.iCloudDrive)], "launchctl exit 5: Boot-out failed: 5: Input/output error")
+        XCTAssertEqual(coordinator.snapshot.lastError[.sync(.iCloudDrive)],
+                       "launchctl bootout exit 5: Boot-out failed: 5: Input/output error")
+    }
+
+    // MARK: Sync, the bounded wait for launchd (ticket 15)
+
+    /// Manuel's report: both calls exit 0, launchd still spawns the job on the first read,
+    /// the row showed "launchctl exit 0, 0" although the service came up.
+    func testSyncOnThatRunsOnTheThirdReadSucceedsWithoutAWarning() {
+        runner.loadedServices = []
+        runner.launchctlSettleReads = 2
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.calls.removeAll()
+
+        coordinator.toggle(.sync(.iCloudDrive))
+
+        XCTAssertEqual(Array(runner.calls.prefix(5)), [
+            SystemCommands.launchctlBootstrap(.iCloudDrive, uid: testUID),
+            SystemCommands.launchctlKickstart(.iCloudDrive, uid: testUID),
+            SystemCommands.launchctlPrint("com.apple.bird", uid: testUID),
+            SystemCommands.launchctlPrint("com.apple.bird", uid: testUID),
+            SystemCommands.launchctlPrint("com.apple.bird", uid: testUID),
+        ])
+        XCTAssertEqual(clock.pauses, [SettingsCoordinator.serviceSettleInterval, SettingsCoordinator.serviceSettleInterval])
+        XCTAssertEqual(coordinator.snapshot.sync[.iCloudDrive], .running)
+        XCTAssertNil(coordinator.snapshot.lastError[.sync(.iCloudDrive)])
+    }
+
+    func testSyncOnThatRunsOnTheSecondReadSucceedsWithoutAWarning() {
+        runner.loadedServices = []
+        runner.launchctlSettleReads = 1
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.calls.removeAll()
+
+        coordinator.toggle(.sync(.iCloudPhotos))
+
+        XCTAssertEqual(clock.pauses.count, 1)
+        XCTAssertEqual(coordinator.snapshot.sync[.iCloudPhotos], .running)
+        XCTAssertNil(coordinator.snapshot.lastError[.sync(.iCloudPhotos)])
+    }
+
+    /// The deadline the menu may block for is a named constant; the tests hold it.
+    func testTheSettleDeadlineIsShortAndTheWaitNeverExceedsIt() {
+        XCTAssertEqual(SettingsCoordinator.serviceSettleDeadline, 2)
+        XCTAssertEqual(SettingsCoordinator.serviceSettleInterval, 0.2)
+
+        runner.loadedServices = []
+        runner.launchctlSettleReads = .max
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.calls.removeAll()
+
+        coordinator.toggle(.sync(.iCloudDrive))
+
+        XCTAssertEqual(clock.pauses.reduce(0, +), SettingsCoordinator.serviceSettleDeadline, accuracy: 1e-9)
+        XCTAssertTrue(clock.pauses.allSatisfy { $0 <= SettingsCoordinator.serviceSettleInterval + 1e-9 })
+        // One read before the first pause, one after each: 1 + 2 s / 0.2 s. The refresh
+        // after the action reads once more.
+        XCTAssertEqual(printCalls(.iCloudDrive), 1 + 10 + 1)
+    }
+
+    /// A pause that returns late eats into the deadline: the wait stops by the clock, and
+    /// the last pause is cut to what is left, so the main thread is never held past it.
+    func testTheWaitStopsByTheClockWhenPausesReturnLate() {
+        runner.loadedServices = []
+        runner.launchctlSettleReads = .max
+        clock.pauseOvershoot = 0.75  // each 0.2 s pause really takes 0.95 s
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.calls.removeAll()
+
+        coordinator.toggle(.sync(.iCloudDrive))
+
+        // 0.95 + 0.95 = 1.9 s elapsed, 0.1 s left for the third pause, then the deadline.
+        XCTAssertEqual(clock.pauses.count, 3)
+        XCTAssertEqual(clock.pauses[0], SettingsCoordinator.serviceSettleInterval, accuracy: 1e-9)
+        XCTAssertEqual(clock.pauses[1], SettingsCoordinator.serviceSettleInterval, accuracy: 1e-9)
+        XCTAssertEqual(clock.pauses[2], 0.1, accuracy: 1e-6)
+        // One read before the first pause, one after each, one in the refresh after the action.
+        XCTAssertEqual(printCalls(.iCloudDrive), 1 + 3 + 1)
+        XCTAssertNotNil(coordinator.snapshot.lastError[.sync(.iCloudDrive)])
+    }
+
+    func testSyncOnThatNeverRunsNamesTheObservedStateNotTheExitCodes() {
+        runner.loadedServices = []
+        runner.launchctlSettleReads = .max
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.sync(.iCloudDrive))
+
+        let reason = coordinator.snapshot.lastError[.sync(.iCloudDrive)]
+        XCTAssertEqual(reason, "launchctl succeeded, but launchd reports no known state "
+                       + "(launchctl print reports state = spawn scheduled) after 2 s")
+        XCTAssertFalse(reason?.contains("exit") ?? true, "both calls exited 0, no exit code is shown")
+        XCTAssertFalse(coordinator.snapshot.isOn(.sync(.iCloudDrive)))
+    }
+
+    func testSyncOnWithOneFailingCallNamesOnlyThatCall() {
+        runner.loadedServices = []
+        runner.launchctlWritesApply = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.sync(.iCloudPhotos))
+
+        // kickstart of a label launchd does not list exits 113, so this names the call.
+        XCTAssertEqual(coordinator.snapshot.lastError[.sync(.iCloudPhotos)], "launchctl kickstart exit 113")
+        XCTAssertEqual(clock.pauses.reduce(0, +), SettingsCoordinator.serviceSettleDeadline, accuracy: 1e-9)
+    }
+
+    func testSyncOffThatStaysRunningNamesTheObservedState() {
+        runner.launchctlSettleReads = .max
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.sync(.iCloudPhotos))
+
+        XCTAssertEqual(coordinator.snapshot.lastError[.sync(.iCloudPhotos)],
+                       "launchctl succeeded, but launchd reports it running after 2 s")
+        XCTAssertTrue(coordinator.snapshot.isOn(.sync(.iCloudPhotos)))
+    }
+
+    func testSyncOffThatStopsOnTheThirdReadSucceedsWithoutAWarning() {
+        runner.launchctlSettleReads = 2
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.calls.removeAll()
+
+        coordinator.toggle(.sync(.iCloudDrive))
+
+        XCTAssertEqual(Array(runner.calls.prefix(4)), [
+            SystemCommands.launchctlBootout(.iCloudDrive, uid: testUID),
+            SystemCommands.launchctlPrint("com.apple.bird", uid: testUID),
+            SystemCommands.launchctlPrint("com.apple.bird", uid: testUID),
+            SystemCommands.launchctlPrint("com.apple.bird", uid: testUID),
+        ])
+        XCTAssertEqual(clock.pauses.count, 2)
+        XCTAssertEqual(coordinator.snapshot.sync[.iCloudDrive], .off)
+        XCTAssertNil(coordinator.snapshot.lastError[.sync(.iCloudDrive)])
+    }
+
+    /// An unreadable state is not "off": bootout succeeds only once launchd no longer lists
+    /// the job. The previous check took any state other than on as success.
+    func testSyncOffWithAnUnreadableStateIsNotASuccess() {
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        runner.launchctlPrintFailure = CommandResult(exitStatus: 1, stderr: "Could not connect to launchd\n")
+
+        coordinator.toggle(.sync(.iCloudDrive))
+
+        XCTAssertEqual(coordinator.snapshot.lastError[.sync(.iCloudDrive)],
+                       "launchctl succeeded, but launchd reports no known state "
+                       + "(launchctl print exit 1: Could not connect to launchd) after 2 s")
+        XCTAssertEqual(clock.pauses.reduce(0, +), SettingsCoordinator.serviceSettleDeadline, accuracy: 1e-9)
+    }
+
+    func testStaleSyncOnWarningDisappearsOnceALaterReadShowsItRunning() {
+        runner.loadedServices = []
+        // 1 + 10 reads during the click and 1 in the refresh after it still show it in between.
+        runner.launchctlSettleReads = 12
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.sync(.iCloudDrive))
+        XCTAssertNotNil(coordinator.snapshot.lastError[.sync(.iCloudDrive)], "still spawning at the deadline")
+
+        coordinator.refreshObserved()  // the menu opens again, launchd now reports it running
+
+        XCTAssertEqual(coordinator.snapshot.sync[.iCloudDrive], .running)
+        XCTAssertNil(coordinator.snapshot.lastError[.sync(.iCloudDrive)])
+        XCTAssertFalse(Formatting.settingsRows(coordinator.snapshot).contains { $0.kind == .warning })
+    }
+
+    func testStaleSyncOffWarningDisappearsOnceALaterReadShowsItOff() {
+        // 1 + 10 reads during the click and 1 in the refresh after it still show it in between.
+        runner.launchctlSettleReads = 12
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+
+        coordinator.toggle(.sync(.iCloudPhotos))
+        XCTAssertNotNil(coordinator.snapshot.lastError[.sync(.iCloudPhotos)], "still running at the deadline")
+
+        coordinator.refreshObserved()
+
+        XCTAssertEqual(coordinator.snapshot.sync[.iCloudPhotos], .off)
+        XCTAssertNil(coordinator.snapshot.lastError[.sync(.iCloudPhotos)])
+    }
+
+    func testASyncWarningStaysWhileTheStateIsStillNotTheWantedOne() {
+        runner.loadedServices = []
+        runner.launchctlSettleReads = .max
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        coordinator.toggle(.sync(.iCloudDrive))
+
+        coordinator.refreshObserved()
+
+        XCTAssertNotNil(coordinator.snapshot.lastError[.sync(.iCloudDrive)])
+    }
+
+    func testStaleOneDriveWarningDisappearsOnceItRuns() {
+        applications.installed = []
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        coordinator.toggle(.sync(.oneDrive))
+        XCTAssertNotNil(coordinator.snapshot.lastError[.sync(.oneDrive)])
+
+        coordinator.refreshObserved()
+        XCTAssertNotNil(coordinator.snapshot.lastError[.sync(.oneDrive)], "still not running")
+
+        applications.running = ["com.microsoft.OneDrive-mac"]  // started by hand
+        coordinator.refreshObserved()
+        XCTAssertNil(coordinator.snapshot.lastError[.sync(.oneDrive)])
+    }
+
+    func testStaleLidClosedOnWarningDisappearsOnceSleepDisabledReadsOne() {
+        runner.sudoPasswordless = false
+        runner.administratorDialogAccepted = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        coordinator.toggle(.lidClosedAwake)
+        XCTAssertEqual(coordinator.snapshot.lastError[.lidClosedAwake], "execution error: User canceled. (-128)")
+
+        runner.sleepDisabled = true  // set outside Restwatt afterwards
+        coordinator.refreshObserved()
+        XCTAssertNil(coordinator.snapshot.lastError[.lidClosedAwake])
+    }
+
+    /// The saver profile is four vectors and `SleepDisabled 0` shows only the first, so a
+    /// read cannot prove the failed write complete; that warning stays.
+    func testFailedSaverWarningStaysEvenWhenSleepDisabledLaterReadsZero() {
+        runner.sudoPasswordless = false
+        runner.administratorDialogAccepted = false
+        runner.sleepDisabled = true
+        store.stored = StoredSettings(lidClosedAwakeArmedByRestwatt: false)
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        coordinator.toggle(.lidClosedAwake)
+        XCTAssertNotNil(coordinator.snapshot.lastError[.lidClosedAwake])
+
+        runner.sleepDisabled = false
+        coordinator.refreshObserved()
+        XCTAssertNotNil(coordinator.snapshot.lastError[.lidClosedAwake])
+    }
+
+    func testStaleEnergyModeWarningDisappearsOnceTheModeReadsBackOnTheSameSource() {
+        runner.energyModeWritesApply = false
+        let coordinator = makeCoordinator()
+        coordinator.applyStoredAtLaunch()
+        coordinator.toggle(.energyMode(.automatic))
+        XCTAssertNotNil(coordinator.snapshot.lastError[.energyMode(.automatic)])
+
+        runner.currentSource = .ac
+        runner.energyModes[.ac] = 0
+        coordinator.refreshObserved()
+        XCTAssertNotNil(coordinator.snapshot.lastError[.energyMode(.automatic)],
+                         "the write was for Battery Power; AC showing the mode proves nothing")
+
+        runner.currentSource = .battery
+        runner.energyModes[.battery] = 0
+        coordinator.refreshObserved()
+        XCTAssertNil(coordinator.snapshot.lastError[.energyMode(.automatic)])
     }
 
     func testLoadedIdleServiceCountsAsOn() {

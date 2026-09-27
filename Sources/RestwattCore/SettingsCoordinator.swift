@@ -23,6 +23,12 @@ public protocol CommandRunning {
     func run(_ vector: CommandVector) -> CommandResult
 }
 
+/// A monotonic clock that can also wait. The bounded wait after a `launchctl` call runs on
+/// it, so tests drive the wait without sleeping.
+public protocol SettleClock: ClockReading {
+    func pause(_ seconds: TimeInterval)
+}
+
 /// The settings file.
 public protocol SettingsStoring {
     /// Defaults when there is no file or it cannot be read.
@@ -152,6 +158,16 @@ public struct PrivilegedRunner {
 /// Owns the settings state: the held assertions, the settings file and the observed system
 /// state. All calls are synchronous and expected on one thread (the app's main thread).
 public final class SettingsCoordinator {
+    /// How long a `launchctl` switch may take to show in `launchctl print` before the click
+    /// counts as failed. launchd reports a job it is still spawning or tearing down in
+    /// neither end state, so one read right after the calls is not enough. The main thread
+    /// waits at most this long (plus the duration of the last read).
+    public static let serviceSettleDeadline: TimeInterval = 2
+    /// Pause between two reads of `launchctl print` while waiting.
+    public static let serviceSettleInterval: TimeInterval = 0.2
+    /// The most pauses one wait takes, so rounding in the clock never adds a read.
+    static let serviceSettlePauses = Int((serviceSettleDeadline / serviceSettleInterval).rounded(.up))
+
     public private(set) var snapshot = SettingsSnapshot()
 
     private let store: SettingsStoring
@@ -160,18 +176,23 @@ public final class SettingsCoordinator {
     private let applications: ApplicationControlling
     private let privileged: PrivilegedRunner
     private let uid: uid_t
+    private let clock: SettleClock
     private var stored: StoredSettings
     private var persisted: StoredSettings
     private var tokens: [AwakeAssertion: UInt32] = [:]
+    /// The state each failed action wanted, per toggle with a warning. A later read that
+    /// shows that state drops the warning: it no longer describes what the menu shows.
+    private var wantedAfterFailure: [SettingKey: WantedState] = [:]
 
     public init(store: SettingsStoring, assertions: PowerAssertionHolding, commands: CommandRunning,
-                applications: ApplicationControlling, uid: uid_t) {
+                applications: ApplicationControlling, uid: uid_t, clock: SettleClock) {
         self.store = store
         self.assertions = assertions
         self.commands = commands
         self.applications = applications
         self.privileged = PrivilegedRunner(commands: commands)
         self.uid = uid
+        self.clock = clock
         stored = StoredSettings()
         persisted = stored
     }
@@ -201,6 +222,7 @@ public final class SettingsCoordinator {
         }
         snapshot.armedByRestwatt = stored.lidClosedAwakeArmedByRestwatt
         snapshot.rememberedAwake = stored.awake
+        dropWarningsTheSystemNoLongerShows()
     }
 
     /// A click on the toggle: performs its actions, re-reads the state, then settles the
@@ -236,12 +258,24 @@ public final class SettingsCoordinator {
             case .success:
                 if clearingErrors {
                     snapshot.lastError[key] = nil
+                    wantedAfterFailure[key] = nil
                 }
             case .failure(let failure):
                 snapshot.lastError[key] = failure.reason
+                wantedAfterFailure[key] = WantedState(of: action)
             }
         }
         saveIfChanged()
+    }
+
+    /// Drops each warning whose failed action wanted exactly the state just read. Only
+    /// warnings with a `WantedState` qualify; the others stay until the next successful
+    /// action on their toggle.
+    private func dropWarningsTheSystemNoLongerShows() {
+        for (key, wanted) in wantedAfterFailure where wanted.isObserved(in: snapshot) {
+            snapshot.lastError[key] = nil
+            wantedAfterFailure[key] = nil
+        }
     }
 
     private static func key(of action: SettingsAction) -> SettingKey {
@@ -326,16 +360,14 @@ public final class SettingsCoordinator {
                 return .failure(SettingsFailure("\(service.label) is not a launchd service"))
             }
             // The scripts ignore both exit codes and judge by the resulting state; so does this.
-            let bootstrapResult = commands.run(bootstrap)
-            let kickstartResult = commands.run(kickstart)
-            return checkServiceState(service, wanted: true, results: [bootstrapResult, kickstartResult])
+            let calls = [bootstrap, kickstart]
+            return checkServiceState(service, wanted: true, calls: calls, results: calls.map(commands.run))
 
         case .bootout(let service):
             guard let bootout = SystemCommands.launchctlBootout(service, uid: uid) else {
                 return .failure(SettingsFailure("\(service.label) is not a launchd service"))
             }
-            let result = commands.run(bootout)
-            return checkServiceState(service, wanted: false, results: [result])
+            return checkServiceState(service, wanted: false, calls: [bootout], results: [commands.run(bootout)])
 
         case .launchApplication(let service):
             // The primary bundle identifier's error is the one worth showing; the others are
@@ -397,19 +429,52 @@ public final class SettingsCoordinator {
         }
     }
 
-    /// Success is the observed state after the calls, not their exit codes; the exit codes
-    /// only explain a miss.
-    private func checkServiceState(_ service: SyncService, wanted: Bool,
+    /// Success is the observed state after the calls, not their exit codes: `launchctl print`
+    /// is read until it shows the wanted state or `serviceSettleDeadline` has passed. A miss
+    /// names the calls that failed, with their exit status and stderr, or, when every call
+    /// succeeded, the state launchd reported at the deadline.
+    private func checkServiceState(_ service: SyncService, wanted: Bool, calls: [CommandVector],
                                    results: [CommandResult]) -> Result<Void, SettingsFailure> {
-        let state = readServiceState(service)
+        let state = awaitServiceState(service, wanted: wanted)
         snapshot.sync[service] = state
-        if state.isOn == wanted {
+        if state.matches(wanted: wanted) {
             return .success(())
         }
-        let codes = results.map { String($0.exitStatus) }.joined(separator: ", ")
-        let stderr = results.map(\.stderr).first { !$0.isEmpty } ?? ""
-        let detail = stderr.isEmpty ? "" : ": \(SystemStateParser.head(stderr))"
-        return .failure(SettingsFailure("launchctl exit \(codes)\(detail)"))
+        let failed = zip(calls, results).filter { !$0.1.succeeded }.map { vector, result in
+            let call = "\(vector.arguments.first ?? vector.commandLine) exit \(result.exitStatus)"
+            return result.stderr.isEmpty ? call : "\(call): \(SystemStateParser.head(result.stderr))"
+        }
+        if !failed.isEmpty {
+            return .failure(SettingsFailure("launchctl \(failed.joined(separator: "; "))"))
+        }
+        let seconds = String(format: "%g", Self.serviceSettleDeadline)
+        return .failure(SettingsFailure(
+            "launchctl succeeded, but launchd reports \(Self.describe(state)) after \(seconds) s"))
+    }
+
+    /// Reads the service state until it matches the wanted one; the reads stop once
+    /// `serviceSettleDeadline` has passed since the first one.
+    private func awaitServiceState(_ service: SyncService, wanted: Bool) -> ServiceState {
+        let start = clock.now
+        var state = readServiceState(service)
+        for _ in 0..<Self.serviceSettlePauses where !state.matches(wanted: wanted) {
+            let remaining = Self.serviceSettleDeadline - (clock.now - start)
+            guard remaining > 0 else {
+                break
+            }
+            clock.pause(min(Self.serviceSettleInterval, remaining))
+            state = readServiceState(service)
+        }
+        return state
+    }
+
+    private static func describe(_ state: ServiceState) -> String {
+        switch state {
+        case .running: return "it running"
+        case .loadedIdle: return "it loaded, not running"
+        case .off: return "it not loaded"
+        case .unknown(let reason): return "no known state (\(reason))"
+        }
     }
 
     private static func failure(_ error: Error) -> SettingsFailure {
@@ -503,5 +568,55 @@ public final class SettingsCoordinator {
             snapshot.storeError = failure.reason
             return failure
         }
+    }
+}
+
+/// The state a failed action wanted, where one read of the system shows all of it. Actions
+/// whose effect the read covers only in part have none (the saver profile writes four
+/// vectors, `SleepDisabled` shows only the first), so their warning is never dropped by an
+/// observation.
+enum WantedState: Equatable {
+    case service(SyncService, on: Bool)
+    case sleepDisabled
+    case energyMode(EnergyMode, PowerSource)
+
+    init?(of action: SettingsAction) {
+        switch action {
+        case .bootstrapAndKickstart(let service), .launchApplication(let service):
+            self = .service(service, on: true)
+        case .bootout(let service), .quitApplication(let service):
+            self = .service(service, on: false)
+        case .writePmset(.awake, _):
+            // One vector; `disablesleep 1` is its last key.
+            self = .sleepDisabled
+        case .writeEnergyMode(let mode, let source):
+            self = .energyMode(mode, source)
+        case .acquire, .release, .writePmset, .setArmed, .refuseLidClosedWrite, .refuseEnergyModeWrite:
+            // Assertions are held, not read from the system; a refusal names a read that
+            // failed, not a state that was wanted.
+            return nil
+        }
+    }
+
+    func isObserved(in snapshot: SettingsSnapshot) -> Bool {
+        switch self {
+        case .service(let service, let on):
+            return snapshot.sync[service]?.matches(wanted: on) ?? false
+        case .sleepDisabled:
+            return snapshot.sleepDisabled == .known(true)
+        case .energyMode(let mode, let source):
+            guard case .known(let observed) = snapshot.energyMode else {
+                return false
+            }
+            return observed.source == source && observed.mode == mode
+        }
+    }
+}
+
+extension ServiceState {
+    /// On is running or loaded; off is only a service launchd does not list (or an
+    /// application that does not run), never a state that could not be read.
+    func matches(wanted on: Bool) -> Bool {
+        on ? isOn : self == .off
     }
 }

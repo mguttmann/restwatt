@@ -152,7 +152,16 @@ public enum SystemStateParser {
             }
             return .unknown("launchctl print exit \(result.exitStatus): \(head(result.stderr))")
         }
+        // Any other top-level state (launchd reports its own while it spawns or tears a job
+        // down) is passed on verbatim rather than guessed at. Only the job's own lines count:
+        // they are indented by exactly one tab, nested blocks (endpoints and the like) by more
+        // and carry `state = ` lines of their own.
+        var otherState: String?
         for rawLine in result.stdout.split(separator: "\n") {
+            guard rawLine.hasPrefix("\t"), !rawLine.dropFirst().hasPrefix("\t"),
+                  !rawLine.dropFirst().hasPrefix(" ") else {
+                continue
+            }
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line == "state = not running" {
                 return .loadedIdle
@@ -160,8 +169,11 @@ public enum SystemStateParser {
             if line == "state = running" {
                 return .running
             }
+            if otherState == nil, line.hasPrefix("state = ") {
+                otherState = line
+            }
         }
-        return .unknown("launchctl print reported no state")
+        return .unknown(otherState.map { "launchctl print reports \(head($0))" } ?? "launchctl print reported no state")
     }
 
     /// An `IOReturn` as the eight hex digits IOKit documents it with (`e00002bc`), never as a

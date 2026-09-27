@@ -204,7 +204,8 @@ public struct SettingsSnapshot: Equatable, Sendable {
     public var sync: [SyncService: ServiceState]
     /// Energy Mode of the current power source as `pmset -g custom` and `pmset -g cap` report it.
     public var energyMode: Observation<EnergyModeObservation>
-    /// Reason the last action on a toggle failed; cleared when the next action succeeds.
+    /// Reason the last action on a toggle failed; cleared when the next action succeeds, or
+    /// when a later read shows the state the failed action wanted (see `refreshObserved`).
     public var lastError: [SettingKey: String]
     /// Reason the settings file could not be written; nil after a successful write.
     public var storeError: String?

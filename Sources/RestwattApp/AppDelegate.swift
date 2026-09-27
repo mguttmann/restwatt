@@ -30,7 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             assertions: IOKitPowerAssertions(),
             commands: ProcessCommandRunner(),
             applications: WorkspaceApplicationController(),
-            uid: getuid()
+            uid: getuid(),
+            clock: SystemSettleClock()
         )
         settings.applyStoredAtLaunch()
         self.settings = settings
@@ -138,6 +139,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SystemClock: ClockReading {
     var now: TimeInterval {
         ProcessInfo.processInfo.systemUptime
+    }
+}
+
+/// The uptime clock plus a blocking pause, for the bounded wait after a `launchctl` switch.
+struct SystemSettleClock: SettleClock {
+    var now: TimeInterval {
+        ProcessInfo.processInfo.systemUptime
+    }
+
+    func pause(_ seconds: TimeInterval) {
+        Thread.sleep(forTimeInterval: seconds)
     }
 }
 

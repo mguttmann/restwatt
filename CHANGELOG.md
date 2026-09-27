@@ -8,6 +8,31 @@ The version lives in the `VERSION` file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-28
+
+### Fixed
+
+- Turning `iCloud Drive` or `iCloud Photos` back on could show `could not change:
+  launchctl exit 0, 0` under the item although both calls succeeded: Restwatt read
+  `launchctl print` once, right after `bootstrap` and `kickstart`, before launchd reported
+  the job as running. Restwatt now reads the state again every 0.2 seconds until
+  2 seconds have passed after `bootstrap` plus `kickstart` or `bootout` and counts the click as done as
+  soon as the wanted state shows. When it does not show in time, the reason line names
+  each call that failed with its exit code and message (`launchctl kickstart exit 113`),
+  or, when every call succeeded, the state launchd reported (`launchctl succeeded, but
+  launchd reports it running after 2 s`); it never shows exit codes of calls that
+  succeeded. A state line from `launchctl print` that Restwatt does not know is quoted in
+  the reason and next to the item instead of `reported no state`.
+- Turning a sync service off no longer counts as done when its state cannot be read
+  afterwards; only a service launchd no longer lists counts as off.
+- A reason line stayed under a toggle until a later click on it succeeded, even when the
+  system had meanwhile reached the state the click wanted. Under the sync items, under
+  `Stay awake with the lid closed` after a failed turn-on and under an Energy Mode row
+  (that mode on the same power source) the line now disappears as soon as a later read,
+  such as opening the menu, shows that state. A failed turn-off of the lid-closed toggle
+  keeps its line until a later click succeeds, because the value read back does not
+  confirm every setting the saver profile writes.
+
 ## [0.4.0] - 2026-09-23
 
 ### Added

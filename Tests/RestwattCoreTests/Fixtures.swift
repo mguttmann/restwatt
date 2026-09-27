@@ -430,6 +430,23 @@ AC Power:
         """
     }
 
+    /// A job launchd has loaded and is still spawning: neither `running` nor `not running`.
+    /// The exact wording macOS prints in this window was not captured; the coordinator must
+    /// not depend on it.
+    static func launchctlSpawning(_ label: String) -> String {
+        """
+        gui/503/\(label) = {
+        \tactive count = 1
+        \tpath = /System/Library/LaunchAgents/\(label).plist
+        \ttype = LaunchAgent
+        \tstate = spawn scheduled
+
+        \truns = 0
+        }
+
+        """
+    }
+
     static func launchctlNotFound(_ label: String) -> CommandResult {
         CommandResult(exitStatus: 113, stdout: "",
                       stderr: "Bad request.\nCould not find service \"\(label)\" in domain for user gui: 503\n")
@@ -492,6 +509,13 @@ final class ScriptedCommandRunner: CommandRunning {
     /// False simulates launchctl accepting the call but changing nothing.
     var launchctlWritesApply = true
     var launchctlWriteExit: Int32 = 0
+    /// How many `launchctl print` reads after a kickstart or bootout still show the job in
+    /// between (spawning, or still running while it is torn down); `Int.max` for a job that
+    /// never gets there.
+    var launchctlSettleReads = 0
+    /// When set, every `launchctl print` returns this result (launchd itself unreachable).
+    var launchctlPrintFailure: CommandResult?
+    private var inBetweenReads: [String: (remaining: Int, output: CommandResult)] = [:]
     /// Simulated `powermode` per source as `pmset -g custom` prints it; Manuel's Mac on
     /// 2026-09-22 (Battery 1, AC 2). A nil value is a block without the line; a missing
     /// source has no block.
@@ -628,6 +652,13 @@ final class ScriptedCommandRunner: CommandRunning {
         switch args.first {
         case "print" where args.count == 2 && args[1].hasPrefix(domainPrefix):
             let label = String(args[1].dropFirst(domainPrefix.count))
+            if let launchctlPrintFailure {
+                return launchctlPrintFailure
+            }
+            if let pending = inBetweenReads[label], pending.remaining > 0 {
+                inBetweenReads[label] = (pending.remaining - 1, pending.output)
+                return pending.output
+            }
             guard loadedServices.contains(label) else {
                 return SystemFixtures.launchctlNotFound(label)
             }
@@ -646,11 +677,15 @@ final class ScriptedCommandRunner: CommandRunning {
             let label = String(args[1].dropFirst(domainPrefix.count))
             if launchctlWritesApply {
                 idleServices.remove(label)
+                inBetweenReads[label] = (launchctlSettleReads,
+                                         CommandResult(exitStatus: 0, stdout: SystemFixtures.launchctlSpawning(label)))
             }
             return CommandResult(exitStatus: loadedServices.contains(label) ? 0 : 113)
         case "bootout" where args.count == 2 && args[1].hasPrefix(domainPrefix):
             let label = String(args[1].dropFirst(domainPrefix.count))
             if launchctlWritesApply {
+                inBetweenReads[label] = (launchctlSettleReads,
+                                         CommandResult(exitStatus: 0, stdout: SystemFixtures.launchctlRunning(label)))
                 loadedServices.remove(label)
                 idleServices.remove(label)
             }
@@ -663,6 +698,20 @@ final class ScriptedCommandRunner: CommandRunning {
     private func unscripted(_ vector: CommandVector) -> CommandResult {
         XCTFail("unscripted command: \(vector.commandLine)")
         return CommandResult(exitStatus: 127, stderr: "unscripted")
+    }
+}
+
+/// The clock of the bounded launchctl wait: a pause only moves `now`, nothing sleeps.
+final class FakeSettleClock: SettleClock {
+    var now: TimeInterval = 1_000
+    var pauses: [TimeInterval] = []
+    /// Extra time each pause really takes (a real sleep returns late), so the deadline
+    /// check has to use the clock, not the count of pauses.
+    var pauseOvershoot: TimeInterval = 0
+
+    func pause(_ seconds: TimeInterval) {
+        pauses.append(seconds)
+        now += seconds + pauseOvershoot
     }
 }
 
